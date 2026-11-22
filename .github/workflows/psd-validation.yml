@@ -38,9 +38,9 @@ jobs:
   psd-spine-validation:
     if: github.repository != 'SpineAnimator/sa-psd-tool-runner'
     name: Native PSD and Spine 4.3 validation
-    # Use an ephemeral GitHub-hosted Linux runner. This avoids requiring an
-    # always-on external self-hosted host or using the user's iMac.
-    runs-on: ubuntu-24.04
+    # The caller opts into the user's explicitly authorized self-hosted macOS runner.
+    # This is macOS, not Linux; no Spine Editor GUI validation is performed here.
+    runs-on: [self-hosted, macOS, X64, sa-psd-tool-runner]
     timeout-minutes: 25
     steps:
       - name: Report assigned runner
