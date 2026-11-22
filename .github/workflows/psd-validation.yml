@@ -12,7 +12,7 @@ permissions:
 jobs:
   runner-smoke:
     if: github.repository == 'SpineAnimator/sa-psd-tool-runner'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, sa-psd-tool-runner]
     timeout-minutes: 5
     steps:
       - name: Prove runner allocation and toolchain
@@ -24,6 +24,12 @@ jobs:
           uname -a
           python3 --version
           node --version
+      - name: Validate runner bootstrap script
+        run: bash -n entrypoint.sh
+      - name: Build self-hosted runner image
+        run: docker build --pull -t sa-psd-tool-runner:ci .
+      - name: Inspect runner image
+        run: docker image inspect sa-psd-tool-runner:ci --format '{{.Os}}/{{.Architecture}}'
 
   psd-spine-validation:
     if: github.repository != 'SpineAnimator/sa-psd-tool-runner'
