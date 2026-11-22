@@ -2,12 +2,31 @@ name: SA PSD tool runner
 
 on:
   workflow_call:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  runner-smoke:
+    if: github.repository == 'SpineAnimator/sa-psd-tool-runner'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Prove runner allocation and toolchain
+        shell: bash
+        run: |
+          echo "RUNNER_NAME=$RUNNER_NAME"
+          echo "RUNNER_OS=$RUNNER_OS"
+          echo "RUNNER_ARCH=$RUNNER_ARCH"
+          uname -a
+          python3 --version
+          node --version
+
   psd-spine-validation:
+    if: github.repository != 'SpineAnimator/sa-psd-tool-runner'
     name: Native PSD and Spine 4.3 validation
     runs-on: ubuntu-latest
     timeout-minutes: 25
