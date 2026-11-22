@@ -12,7 +12,7 @@ permissions:
 jobs:
   runner-smoke:
     if: github.repository == 'SpineAnimator/sa-psd-tool-runner'
-    runs-on: [self-hosted, linux, x64, sa-psd-tool-runner]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Prove runner allocation and toolchain
@@ -34,7 +34,7 @@ jobs:
   psd-spine-validation:
     if: github.repository != 'SpineAnimator/sa-psd-tool-runner'
     name: Native PSD and Spine 4.3 validation
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, sa-psd-tool-runner]
     timeout-minutes: 25
     steps:
       - name: Report assigned runner
