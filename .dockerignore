@@ -1,0 +1,6 @@
+.git
+.env
+.runner
+.credentials
+.credentials_rsaparams
+_work
