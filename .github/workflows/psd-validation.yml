@@ -32,6 +32,8 @@ jobs:
         run: docker build --pull -t sa-psd-tool-runner:ci .
       - name: Inspect runner image
         run: docker image inspect sa-psd-tool-runner:ci --format '{{.Os}}/{{.Architecture}}'
+      - name: Validate Compose deployment configuration
+        run: docker compose config --quiet
 
   psd-spine-validation:
     if: github.repository != 'SpineAnimator/sa-psd-tool-runner'
