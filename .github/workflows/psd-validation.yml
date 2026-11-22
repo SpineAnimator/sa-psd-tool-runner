@@ -24,6 +24,8 @@ jobs:
           uname -a
           python3 --version
           node --version
+      - name: Checkout runner image sources
+        uses: actions/checkout@v4
       - name: Validate runner bootstrap script
         run: bash -n entrypoint.sh
       - name: Build self-hosted runner image
