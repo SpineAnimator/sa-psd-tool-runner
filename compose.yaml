@@ -1,0 +1,15 @@
+services:
+  sa-psd-tool-runner:
+    build: .
+    container_name: sa-psd-tool-runner
+    restart: unless-stopped
+    environment:
+      RUNNER_URL: https://github.com/SpineAnimator/spine-animator-private
+      RUNNER_NAME: sa-psd-tool-runner-01
+      RUNNER_LABELS: sa-psd-tool-runner,linux,x64
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-}
+    volumes:
+      - runner-data:/runner
+
+volumes:
+  runner-data:
