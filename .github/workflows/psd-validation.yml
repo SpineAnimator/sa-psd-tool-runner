@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Prove runner allocation and toolchain
+      - name: Prove GitHub-hosted runner allocation and toolchain
         shell: bash
         run: |
           echo "RUNNER_NAME=$RUNNER_NAME"
@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Validate runner bootstrap script
         run: bash -n entrypoint.sh
-      - name: Build self-hosted runner image
+      - name: Build optional self-hosted runner image
         run: docker build --pull -t sa-psd-tool-runner:ci .
       - name: Inspect runner image
         run: docker image inspect sa-psd-tool-runner:ci --format '{{.Os}}/{{.Architecture}}'
@@ -38,21 +38,21 @@ jobs:
   psd-spine-validation:
     if: github.repository != 'SpineAnimator/sa-psd-tool-runner'
     name: Native PSD and Spine 4.3 validation
-    runs-on: [self-hosted, linux, x64, sa-psd-tool-runner]
+    # Use an ephemeral GitHub-hosted Linux runner. This avoids requiring an
+    # always-on external self-hosted host or using the user's iMac.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Report assigned runner
         shell: bash
         run: |
-          echo "runner_name=${RUNNER_NAME:-unknown}"
-          echo "runner_os=${RUNNER_OS:-unknown}"
-          echo "runner_arch=${RUNNER_ARCH:-unknown}"
-          echo "image_os=${ImageOS:-unknown}"
-          echo "image_version=${ImageVersion:-unknown}"
+          echo "runner_name=$RUNNER_NAME"
+          echo "runner_os=$RUNNER_OS"
+          echo "runner_arch=$RUNNER_ARCH"
           uname -a
           df -h .
-          python3 --version || true
-          node --version || true
+          python3 --version
+          node --version
 
       - name: Checkout caller repository
         uses: actions/checkout@v4
@@ -81,7 +81,7 @@ jobs:
         run: python -m unittest discover -s tests -p test_psd_v754_tree.py -v
 
       - name: Verify native PSD-to-Spine raster and ZIP packaging
-        run: python -m unittest discover -s tests -p test_psd_spine_*.py -v
+        run: python -m unittest discover -s tests -p 'test_psd_spine_*.py' -v
 
       - name: Verify native PSD composite and fail-closed guards
         run: python -m unittest discover -s tests -p test_native_psd_composite.py -v
