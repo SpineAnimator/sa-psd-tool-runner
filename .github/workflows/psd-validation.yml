@@ -84,10 +84,10 @@ jobs:
         run: python3.11 -m unittest discover -s tests -p test_psd_v754_tree.py -v
 
       - name: Verify native PSD-to-Spine raster and ZIP packaging
-        run: python -m unittest discover -s tests -p 'test_psd_spine_*.py' -v
+        run: python3.11 -m unittest discover -s tests -p 'test_psd_spine_*.py' -v
 
       - name: Verify native PSD composite and fail-closed guards
-        run: python -m unittest discover -s tests -p test_native_psd_composite.py -v
+        run: python3.11 -m unittest discover -s tests -p test_native_psd_composite.py -v
 
       - name: Assert no generated animation is implied
         shell: bash
