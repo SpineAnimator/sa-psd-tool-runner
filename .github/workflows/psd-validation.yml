@@ -42,6 +42,8 @@ jobs:
     # This is macOS, not Linux; no Spine Editor GUI validation is performed here.
     runs-on: [self-hosted, macOS, X64, sa-psd-tool-runner]
     timeout-minutes: 25
+    env:
+      PYTHONPATH: /usr/local/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages
     steps:
       - name: Report assigned runner
         shell: bash
