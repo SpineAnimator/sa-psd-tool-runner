@@ -1,0 +1,35 @@
+name: SA semantic contour validation (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      checkout-ref:
+        description: Exact branch or commit to validate in the caller repository
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  semantic-contour:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout caller repository and requested source ref
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.checkout-ref }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked test dependencies
+        run: npm ci
+      - name: Validate semantic contour renderer and reconstruction QA
+        run: node --test tests/semantic-contour-renderer.test.cjs tests/reconstruction-qa.test.cjs tests/scene-ir-animation-planner.test.cjs tests/vision-holes.test.cjs
+      - name: Validate complete Node test suite
+        run: npm test
