@@ -16,7 +16,12 @@ class PublicRunnerContractTests(unittest.TestCase):
             all(target in {"ubuntu-24.04", "ubuntu-latest"} for target in run_targets),
             f"non-public runner target found: {run_targets}",
         )
-        self.assertNotRegex(source, r"(?i)self-hosted|RUNNER_TOKEN|config\.sh|run\.sh")
+        self.assertNotRegex(source, r"(?i)self-hosted|RUNNER_TOKEN|config\.sh|(?<![A-Za-z0-9_.-])run\.sh(?![A-Za-z0-9_.-])")
+
+    def test_runner_script_detector_allows_spine_launcher_wrapper(self):
+        forbidden = re.compile(r"(?i)(?<![A-Za-z0-9_.-])run\\.sh(?![A-Za-z0-9_.-])")
+        self.assertIsNone(forbidden.search("/tmp/spine-run.sh"))
+        self.assertIsNotNone(forbidden.search("/opt/legacy-runner/run.sh"))
 
     def test_no_containerized_runner_registration_remains(self):
         forbidden = [
