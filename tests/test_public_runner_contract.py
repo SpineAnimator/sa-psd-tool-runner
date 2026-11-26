@@ -32,6 +32,15 @@ class PublicRunnerContractTests(unittest.TestCase):
         self.assertIn("psd-spine-validation:", source)
         self.assertIn("github.repository == 'SpineAnimator/sa-psd-tool-runner'", source)
 
+    def test_reusable_job_can_validate_an_explicit_private_source_on_public_runner(self):
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("workflow_call:", source)
+        self.assertIn("source-repository:", source)
+        self.assertIn("source-ref:", source)
+        self.assertIn("repository: ${{ inputs.source-repository || github.repository }}", source)
+        self.assertIn("token: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}", source)
+        self.assertIn("runs-on: ubuntu-24.04", source)
+
 
 if __name__ == "__main__":
     unittest.main()
