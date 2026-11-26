@@ -346,7 +346,9 @@ jobs:
             echo "scripts/spine-pack.mjs нет в репозитории — раскладка пропущена"
             exit 0
           fi
-          ZIP=$(ls -t saver-out/*.zip 2>/dev/null | head -1 || true)
+          ZIP_CANDIDATES=()
+          while IFS= read -r candidate; do ZIP_CANDIDATES+=("$candidate"); done < <(find saver-out -maxdepth 1 -type f -name '*.zip' -printf '%T@ %p\n' 2>/dev/null | sort -nr)
+          ZIP="${ZIP_CANDIDATES[0]#* }"
           if [ -z "${ZIP:-}" ]; then
             echo "ZIP сейвера не найден — раскладка не нужна"
             exit 0
@@ -538,7 +540,7 @@ jobs:
           # главному процессу Spine, но и его legacy-подпроцессу (редактор 3.8.99),
           # иначе он падает с HeadlessException и всё уходит в 4.x
           Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
             sleep 0.5
           done
@@ -594,10 +596,11 @@ jobs:
       - name: Publish final results (with .spine) to results branch + history
         env:
           GITHUB_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          JOB_FALLBACK: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
           JOB="$(cat work/job-id.txt 2>/dev/null || true)"
-          [ -n "${JOB}" ] || JOB="${{ github.event.head_commit.message }}"
+          JOB="${JOB:-$JOB_FALLBACK}"
           SAFE="$(printf '%s' "$JOB" | tr -c 'A-Za-z0-9._-' '_')"
           NOW="$(date -u +%FT%TZ)"
           cp work/output.zip /tmp/publish-output.zip
