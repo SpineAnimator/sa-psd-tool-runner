@@ -29,6 +29,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/**'
+      - 'tests/test_public_runner_contract.py'
   workflow_dispatch:
 
 permissions:
