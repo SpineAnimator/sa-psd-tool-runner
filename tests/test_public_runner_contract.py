@@ -19,7 +19,7 @@ class PublicRunnerContractTests(unittest.TestCase):
         self.assertNotRegex(source, r"(?i)self-hosted|RUNNER_TOKEN|config\.sh|(?<![A-Za-z0-9_.-])run\.sh(?![A-Za-z0-9_.-])")
 
     def test_runner_script_detector_allows_spine_launcher_wrapper(self):
-        forbidden = re.compile(r"(?i)(?<![A-Za-z0-9_.-])run\\.sh(?![A-Za-z0-9_.-])")
+        forbidden = re.compile(r"(?i)(?<![A-Za-z0-9_.-])run\.sh(?![A-Za-z0-9_.-])")
         self.assertIsNone(forbidden.search("/tmp/spine-run.sh"))
         self.assertIsNotNone(forbidden.search("/opt/legacy-runner/run.sh"))
 
