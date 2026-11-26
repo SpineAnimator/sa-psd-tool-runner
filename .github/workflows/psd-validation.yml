@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: main
+      suite:
+        description: Validation suite to execute
+        required: false
+        type: string
+        default: psd
     secrets:
       SOURCE_REPO_TOKEN:
         required: false
@@ -49,7 +54,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_public_runner_contract.py' -v
 
   psd-spine-validation:
-    if: github.repository != 'SpineAnimator/sa-psd-tool-runner'
+    if: github.repository != 'SpineAnimator/sa-psd-tool-runner' && inputs.suite != 'public-site-e2e'
     name: Native PSD and Spine 4.3 validation
     # All PSD and ZIP validation runs on GitHub-hosted Ubuntu; no private executor is required.
     runs-on: ubuntu-24.04
@@ -114,3 +119,38 @@ jobs:
           assert 'independent_layer_recomposition_approved' in s
           print('PASS: source pixel fidelity only; artistic acceptance remains false')
           PY
+
+  public-site-browser-e2e:
+    if: github.repository != 'SpineAnimator/sa-psd-tool-runner' && inputs.suite == 'public-site-e2e'
+    name: Public website layered PSD to ZIP browser E2E • public Ubuntu
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact private 3Spine source revision
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source-repository || 'vladleopold/3Spine-core' }}
+          ref: ${{ inputs.source-ref || 'main' }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked browser and PSD dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm install --no-save --package-lock=false ag-psd@14.5.2
+          npx playwright install --with-deps chromium
+      - name: Run public website layered PSD import, live cloud plan and ZIP E2E
+        run: node scripts/verify_public_site_e2e.mjs
+      - name: Retain nonsensitive browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-site-psd-e2e-evidence
+          path: ${{ runner.temp }}/public-spine-e2e/
+          if-no-files-found: ignore
+          retention-days: 7
