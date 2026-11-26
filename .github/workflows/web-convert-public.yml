@@ -348,7 +348,8 @@ jobs:
           fi
           ZIP_CANDIDATES=()
           while IFS= read -r candidate; do ZIP_CANDIDATES+=("$candidate"); done < <(find saver-out -maxdepth 1 -type f -name '*.zip' -printf '%T@ %p\n' 2>/dev/null | sort -nr)
-          ZIP="${ZIP_CANDIDATES[0]#* }"
+          ZIP=""
+          if ((${#ZIP_CANDIDATES[@]})); then ZIP="${ZIP_CANDIDATES[0]#* }"; fi
           if [ -z "${ZIP:-}" ]; then
             echo "ZIP сейвера не найден — раскладка не нужна"
             exit 0
