@@ -52,6 +52,25 @@ class PublicRunnerContractTests(unittest.TestCase):
         self.assertIn("if: false # Private user project evidence", source)
         self.assertNotIn("github.repository == 'SpineAnimator/sa-psd-tool-runner' && (github.event_name == 'push' || inputs.suite == 'user-spine-project')", source)
 
+    def test_cherry360_editor_workflows_run_public_and_keep_private_evidence_private(self):
+        for filename in ("cherry360-pr123-licensed-editor.yml", "cherry360-pr131-licensed-editor.yml"):
+            with self.subTest(workflow=filename):
+                source = (ROOT / ".github" / "workflows" / filename).read_text(encoding="utf-8")
+                self.assertIn("workflow_call:", source)
+                self.assertIn("runs-on: ubuntu-24.04", source)
+                self.assertIn("secrets.SOURCE_REPO_TOKEN", source)
+                self.assertIn("secrets.SPINE_LICENSE", source)
+                self.assertIn("secrets.SPINE_LINUX_URL", source)
+                self.assertIn("GH_REPO: vladleopold/3Spine-core", source)
+                self.assertIn("gh release create", source)
+                self.assertIn("if: false # PSD, Spine projects", source)
+                self.assertNotIn("secrets.ACCESS_TOKEN", source)
+
+    def test_public_runner_lints_every_workflow(self):
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("actionlint", source)
+        self.assertIn(".github/workflows/**", source)
+
     def test_public_site_psd_browser_e2e_is_available_as_public_runner_suite(self):
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("suite:", source)
