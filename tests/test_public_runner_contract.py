@@ -66,7 +66,7 @@ class PublicRunnerContractTests(unittest.TestCase):
                 self.assertIn("if: false # PSD, Spine projects", source)
                 self.assertNotIn("secrets.ACCESS_TOKEN", source)
 
-    def test_web_convert_is_a_public_private-source_queue_worker(self):
+    def test_web_convert_is_a_public_private_source_queue_worker(self):
         source = (ROOT / ".github" / "workflows" / "web-convert-public.yml").read_text(encoding="utf-8")
         self.assertIn("workflow_call:", source)
         self.assertIn("check-inbox:", source)
