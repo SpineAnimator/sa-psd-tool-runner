@@ -26,7 +26,7 @@ jobs:
           node --version
       - name: Checkout runner image sources
         uses: actions/checkout@v4
-      - name: RED: require public-only runner configuration
+      - name: Run public-only runner contract (RED)
         run: python3 -m unittest discover -s tests -p 'test_public_runner_contract.py' -v
       - name: Validate runner bootstrap script
         run: bash -n entrypoint.sh
