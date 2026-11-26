@@ -23,6 +23,13 @@ jobs:
       ready: ${{ steps.probe.outputs.ready }}
       inbox_sha: ${{ steps.probe.outputs.inbox_sha }}
     steps:
+      - name: Verify public Ubuntu 24.04 runner allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          grep -q 'Ubuntu 24.04' /etc/os-release
+          echo 'PUBLIC_WEB_CONVERT_UBUNTU_24_04_PASS' >> "$GITHUB_STEP_SUMMARY"
       - name: Probe private inbox without exposing tokens
         id: probe
         shell: bash
