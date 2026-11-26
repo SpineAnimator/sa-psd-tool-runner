@@ -27,6 +27,8 @@ on:
         required: false
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/psd-validation.yml'
   workflow_dispatch:
 
 permissions:
@@ -149,7 +151,7 @@ jobs:
           retention-days: 7
 
   native-user-spine-project:
-    if: github.repository != 'SpineAnimator/sa-psd-tool-runner' && inputs.suite == 'user-spine-project'
+    if: github.repository == 'SpineAnimator/sa-psd-tool-runner' && (github.event_name == 'push' || inputs.suite == 'user-spine-project')
     name: Licensed Spine Editor 4.3.26 validation • public Ubuntu
     runs-on: ubuntu-24.04
     timeout-minutes: 25
