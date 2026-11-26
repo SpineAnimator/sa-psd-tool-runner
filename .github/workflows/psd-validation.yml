@@ -38,12 +38,9 @@ jobs:
   psd-spine-validation:
     if: github.repository != 'SpineAnimator/sa-psd-tool-runner'
     name: Native PSD and Spine 4.3 validation
-    # The caller opts into the user's explicitly authorized self-hosted macOS runner.
-    # This is macOS, not Linux; no Spine Editor GUI validation is performed here.
-    runs-on: [self-hosted, macOS, X64, sa-psd-tool-runner]
+    # All PSD and ZIP validation runs on GitHub-hosted Ubuntu; no private executor is required.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
-    env:
-      PYTHONPATH: /usr/local/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages
     steps:
       - name: Report assigned runner
         shell: bash
@@ -71,11 +68,9 @@ jobs:
       - name: Validate v7.54 semantic exporter
         run: node --test tests/v754-exporter.test.mjs
 
-      - name: Bootstrap the preinstalled Python 3.11 runtime
-        run: |
-          python3.11 --version
-          python3.11 -m ensurepip --upgrade
-          python3.11 -m pip --version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install PSD processing dependencies
         run: python3.11 -m pip install --disable-pip-version-check 'Pillow>=10,<14' 'psd-tools>=1.27,<2'
