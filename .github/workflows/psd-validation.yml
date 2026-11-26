@@ -21,6 +21,10 @@ on:
     secrets:
       SOURCE_REPO_TOKEN:
         required: false
+      SPINE_LICENSE:
+        required: false
+      SPINE_LINUX_URL:
+        required: false
   push:
     branches: [main]
   workflow_dispatch:
@@ -54,9 +58,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_public_runner_contract.py' -v
 
   psd-spine-validation:
-    if: github.repository != 'SpineAnimator/sa-psd-tool-runner' && inputs.suite != 'public-site-e2e'
+    if: github.repository != 'SpineAnimator/sa-psd-tool-runner' && inputs.suite == 'psd'
     name: Native PSD and Spine 4.3 validation
-    # All PSD and ZIP validation runs on GitHub-hosted Ubuntu; no private executor is required.
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -70,13 +73,11 @@ jobs:
           df -h .
           python3 --version
           node --version
-
       - name: Require private-source token when a private source is requested
         if: inputs.source-repository != ''
         env:
           SOURCE_REPO_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
         run: test -n "$SOURCE_REPO_TOKEN" || { echo "::error::SOURCE_REPO_TOKEN is required for private source checkout."; exit 1; }
-
       - name: Checkout exact source repository and revision
         uses: actions/checkout@v4
         with:
@@ -84,31 +85,23 @@ jobs:
           ref: ${{ inputs.source-ref || github.sha }}
           token: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}
           persist-credentials: false
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Validate v7.54 semantic exporter
         run: node --test tests/v754-exporter.test.mjs
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install PSD processing dependencies
         run: python3.11 -m pip install --disable-pip-version-check 'Pillow>=10,<14' 'psd-tools>=1.27,<2'
-
       - name: Verify native PSD/PSB hierarchy extraction
         run: python3.11 -m unittest discover -s tests -p test_psd_v754_tree.py -v
-
       - name: Verify native PSD-to-Spine raster and ZIP packaging
         run: python3.11 -m unittest discover -s tests -p 'test_psd_spine_*.py' -v
-
       - name: Verify native PSD composite and fail-closed guards
         run: python3.11 -m unittest discover -s tests -p test_native_psd_composite.py -v
-
       - name: Assert no generated animation is implied
         shell: bash
         run: |
@@ -126,7 +119,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Checkout exact private 3Spine source revision
+      - name: Checkout exact source revision
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.source-repository || 'vladleopold/3Spine-core' }}
@@ -154,3 +147,64 @@ jobs:
           path: ${{ runner.temp }}/public-spine-e2e/
           if-no-files-found: ignore
           retention-days: 7
+
+  native-user-spine-project:
+    if: github.repository != 'SpineAnimator/sa-psd-tool-runner' && inputs.suite == 'user-spine-project'
+    name: Licensed Spine Editor 4.3.26 validation • public Ubuntu
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      SPINE_LICENSE: ${{ secrets.SPINE_LICENSE }}
+      SPINE_LINUX_URL: ${{ secrets.SPINE_LINUX_URL }}
+    steps:
+      - name: Require licensed Editor configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SPINE_LICENSE" || { echo "::error::SPINE_LICENSE is not available to the reusable workflow."; exit 1; }
+          test -n "$SPINE_LINUX_URL" || { echo "::error::SPINE_LINUX_URL is not available to the reusable workflow."; exit 1; }
+      - name: Checkout exact user project source revision
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source-repository || 'vladleopold/3Spine-core' }}
+          ref: ${{ inputs.source-ref || 'verify-user-logo3-20261121' }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}
+          persist-credentials: false
+      - name: Install Linux graphical runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb libxrandr2 libgl1-mesa-dri libgl1 libxrender1 libxi6 libxext6 libxfixes3 libxcursor1
+      - name: Install licensed Spine Editor 4.3.26
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --max-time 600 --retry 2 -A "Mozilla/5.0 (X11; Linux x86_64)" "$SPINE_LINUX_URL" -o "$RUNNER_TEMP/spine-linux.gz"
+          gzip -t "$RUNNER_TEMP/spine-linux.gz"
+          mkdir -p "$RUNNER_TEMP/spine"
+          gzip -dc "$RUNNER_TEMP/spine-linux.gz" | tar -xf - -C "$RUNNER_TEMP/spine"
+          SPINE_SCRIPT="$RUNNER_TEMP/spine/Spine/Spine.sh"
+          test -x "$SPINE_SCRIPT"
+          echo "SPINE_CLI=$SPINE_SCRIPT" >> "$GITHUB_ENV"
+      - name: Open actual user project and export with native Editor
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          set -euo pipefail
+          test -f .private-test-inputs/logo3-user-project.zip
+          xvfb-run -a -s '-screen 0 1600x1000x24' python3 scripts/verify_user_spine_project.py "$SPINE_CLI" .private-test-inputs/logo3-user-project.zip "$RUNNER_TEMP/user-spine-proof"
+      - name: Upload native Editor evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-logo3-spine-editor-4.3.26-proof
+          if-no-files-found: warn
+          retention-days: 7
+          path: ${{ runner.temp }}/user-spine-proof/
+      - name: Deactivate licensed Spine Editor
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${SPINE_CLI:-}" ] && [ -x "$SPINE_CLI" ]; then
+            timeout 180 xvfb-run -a "$SPINE_CLI" -l >/dev/null 2>&1 || true
+          fi
