@@ -41,6 +41,17 @@ class PublicRunnerContractTests(unittest.TestCase):
         self.assertIn("token: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}", source)
         self.assertIn("runs-on: ubuntu-24.04", source)
 
+    def test_user_spine_native_editor_suite_runs_from_a_public_caller_and_waits_for_secrets(self):
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("native-user-spine-project:", source)
+        self.assertIn("inputs.suite == 'user-spine-project'", source)
+        self.assertIn("NATIVE_USER_SPINE_PROJECT_WAITING_FOR_PUBLIC_EDITOR_SECRETS", source)
+        self.assertIn("if: steps.editor.outputs.ready == 'true'", source)
+        self.assertIn("GH_REPO: vladleopold/3Spine-core", source)
+        self.assertIn("gh release create", source)
+        self.assertIn("if: false # Private user project evidence", source)
+        self.assertNotIn("github.repository == 'SpineAnimator/sa-psd-tool-runner' && (github.event_name == 'push' || inputs.suite == 'user-spine-project')", source)
+
     def test_public_site_psd_browser_e2e_is_available_as_public_runner_suite(self):
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("suite:", source)
