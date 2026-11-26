@@ -41,6 +41,14 @@ class PublicRunnerContractTests(unittest.TestCase):
         self.assertIn("token: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}", source)
         self.assertIn("runs-on: ubuntu-24.04", source)
 
+    def test_public_site_psd_browser_e2e_is_available_as_public_runner_suite(self):
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("suite:", source)
+        self.assertIn("public-site-browser-e2e:", source)
+        self.assertIn("inputs.suite == 'public-site-e2e'", source)
+        self.assertIn("node scripts/verify_public_site_e2e.mjs", source)
+        self.assertIn("runs-on: ubuntu-24.04", source)
+
 
 if __name__ == "__main__":
     unittest.main()
