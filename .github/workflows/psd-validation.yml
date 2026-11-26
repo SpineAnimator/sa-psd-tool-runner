@@ -145,7 +145,8 @@ jobs:
           set -euo pipefail
           npm ci
           npm install --no-save --package-lock=false ag-psd@14.5.2
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
+          node -e "require('playwright').chromium.launch({headless:true,args:['--no-sandbox']}).then(b=>b.close())"
       - name: Run public website layered PSD import, live cloud plan and ZIP E2E
         run: node scripts/verify_public_site_e2e.mjs
       - name: Retain nonsensitive browser evidence
