@@ -8,9 +8,9 @@ WORKFLOW = ROOT / ".github" / "workflows" / "psd-validation.yml"
 
 class PublicRunnerContractTests(unittest.TestCase):
     def test_every_job_uses_github_hosted_ubuntu(self):
-        source = WORKFLOW.read_text(encoding="utf-8")
-        jobs = source.split("\njobs:\n", 1)[1]
-        run_targets = re.findall(r"^\s+runs-on:\s*(.+?)\s*$", jobs, re.MULTILINE)
+        workflow_files = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+        source = "\\n".join(path.read_text(encoding="utf-8") for path in workflow_files)
+        run_targets = re.findall(r"^\\s+runs-on:\\s*(.+?)\\s*$", source, re.MULTILINE)
         self.assertTrue(run_targets, "workflow must define executable jobs")
         self.assertTrue(
             all(target in {"ubuntu-24.04", "ubuntu-latest"} for target in run_targets),
