@@ -78,581 +78,581 @@ jobs:
           persist-credentials: true
       - name: Pin private source revision
         run: echo "THREESPINE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-            - name: Overlay tooling from main (inbox has only input.zip + workflow)
-              run: |
-                set -euo pipefail
-                git fetch origin main --depth 1
-                # package.json/package-lock.json/scripts нужны URL-режиму (Node-захват),
-                # иначе setup-node(cache:npm) и npm ci падают — на inbox их нет
-                git checkout origin/main -- .codespace backend package.json package-lock.json scripts
-                git status --short
-      
-            - name: Detect mode (ссылка или готовый input.zip)
-              id: mode
-              run: |
-                set -euo pipefail
-                if [ -f fetch-url.txt ]; then
-                  URL=$(tr -d '\r\n' < fetch-url.txt)
-                  echo "mode=url" >> "$GITHUB_OUTPUT"
-                  echo "url=$URL" >> "$GITHUB_OUTPUT"
-                  echo "SAVER_URL=$URL" >> "$GITHUB_ENV"
-                  echo "ссылка на игру: $URL"
-                else
-                  echo "mode=zip" >> "$GITHUB_OUTPUT"
-                  echo "ссылки нет — берём input.zip, Node-захват пропускаем"
-                fi
-      
-            # Playson: ассеты не в UHT-паках, а в манифесте внутри game.<hash>.js;
-            # скелеты бинарные. Для них нужен наш экстрактор, а не браузерный сейвер.
-            - name: Playson — экстрактор Spine-пар
-              if: ${{ always() && steps.mode.outputs.mode == 'url' }}
-              continue-on-error: true
-              env:
-                URL: ${{ steps.mode.outputs.url }}
-              run: |
-                set -uo pipefail
-                SYM=$(printf '%s' "$URL" | sed -n 's/.*[?&]gameSymbol=\([^&]*\).*/\1/p; s/.*[?&]symbol=\([^&]*\).*/\1/p' | head -1)
-                case "$SYM" in vs*) echo "это PragmaticPlay, Playson-шаг не нужен"; exit 0 ;; esac
-                case "$URL" in
-                  *gameName=*|*box-int*|*playson*) ;;
-                  *) echo "не Playson — пропускаю"; exit 0 ;;
-                esac
-                OUT="$RUNNER_TEMP/pl"
-                rm -rf "$OUT"
-                python3 .codespace/pg-extractor/extract_playson.py "$URL" -o "$OUT" || true
-                N=$(find "$OUT/spine" -name '*.skel' -o -name '*.json' 2>/dev/null | wc -l)
-                echo "Playson: скелетов $N"
-                if [ "$N" -eq 0 ]; then
-                  echo "::warning::Playson-экстрактор не нашёл Spine-скелетов"
-                  exit 0
-                fi
-                # Собираем input.zip из найденных пар — дальше пойдёт общий конвейер
-                # (unpack → convert → .spine → превью → публикация в history).
-                rm -f input.zip
-                mkdir -p pg_out
-                cp -R "$OUT/spine" pg_out/
-                cp -R "$OUT/textures" pg_out/ 2>/dev/null || true
-                cp "$OUT/playson-manifest.json" pg_out/ 2>/dev/null || true
-                # карточки для сайта + готовый zip на каждую пару
-                python3 .codespace/pg-extractor/make_previews_index.py "$PWD/pg_out" || true
-                ( cd pg_out && zip -qr "$GITHUB_WORKSPACE/input.zip" . )
-                echo "input.zip собран из Playson-пар: $(unzip -l input.zip | tail -1)"
-                echo "PLAYSAON=1" >> "$GITHUB_ENV"
-      
-            # ── Универсальный экстрактор Spine ─────────────────────────────────────
-            # Один шаг на любую ссылку, без выбора провайдера. Несколько стратегий
-            # запускаются ВСЕ; каждая сама решает, подходит ли она, по доказательствам
-            # (gameSymbol в ссылке, og:image, бандлы, assets/packs/…), а не по домену.
-            # Всё наловленное сваливается в общий пул; его разбирает универсальный
-            # детектор — он сам ищет атласы, скелеты (JSON и бинарные) и страницы.
-            - name: Универсальный экстрактор Spine
-              id: universal
-              if: ${{ always() && steps.mode.outputs.mode == 'url' }}
-              continue-on-error: true
-              env:
-                URL: ${{ steps.mode.outputs.url }}
-              run: |
-                set -uo pipefail
-                # 3Oaks может отдавать только WEBP/AVIF. Pillow нужен точному
-                # экстрактору до запуска браузерного fallback.
-                python3 -m pip install --quiet Pillow pillow-avif-plugin || \
-                  python3 -m pip install --quiet Pillow
-                echo "pairs=0" >> "$GITHUB_OUTPUT"
-                OUT="$RUNNER_TEMP/universal"
-                rm -rf "$OUT"
-                python3 .codespace/universal/run.py "$URL" --out "$OUT" 2>&1 | tail -90 || true
-                echo "--- отчёт универсального экстрактора:"
-                cat "$OUT/universal-report.json" 2>/dev/null || echo "отчёта нет"
-                N=$(find "$OUT/extracted/spine" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-                echo "универсальный детектор: проектов $N"
-                if [ "$N" -eq 0 ]; then
-                  echo "::warning::универсальный детектор не нашёл ни одного Spine-проекта"
-                  exit 0
-                fi
-                N=$(bash .codespace/assemble_spine_pairs.sh "$OUT/extracted/spine" "$GITHUB_WORKSPACE" 85 | tail -1)
-                if [ "${N:-0}" -eq 0 ]; then
-                  echo "::warning::сборка input.zip не удалась"
-                  exit 0
-                fi
-                echo "input.zip собран универсальным экстрактором: $(unzip -l input.zip | tail -1)"
-                # Не меняем старый skip-путь Playson/Pragmatic. Только для 3Oaks
-                # включаем обязательную нарезку атласов после WEBP/AVIF→PNG.
-                if python3 - <<'PY'
-                import json, os
-                p = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "universal",
-                                                "universal-report.json"), encoding="utf-8"))
-                raise SystemExit(0 if any(x.get("стратегия") == "3oaks" and x.get("подошла")
-                                          for x in p.get("стратегии", [])) else 1)
-                PY
-                then
-                  echo "THREE_OAKS=1" >> "$GITHUB_ENV"
-                  echo "3Oaks: PNG-нормализация и нарезка включены"
-                else
-                  echo "PLAYSAON=1" >> "$GITHUB_ENV"
-                fi
-                echo "pairs=$N" >> "$GITHUB_OUTPUT"
-      
-            # ── Браузерный сейвер: запасной путь, а не основной ────────────────────
-            # Раньше он шёл ПЕРВЫМ и для каждой ссылки нагло браузером 60–75 секунд,
-            # после чего его input.zip перезаписывался экстрактором. Для игр, где
-            # экстрактор справляется, это была чистая потеря времени — больше всех
-            # стоила она на PragmaticPlay (62 с из 553). Теперь браузер включается
-            # только когда экстрактор не нашёл ни одной пары.
-            - name: Fetch game assets by URL (если экстрактор ничего не нашёл)
-              id: browser
-              if: ${{ always() && steps.mode.outputs.mode == 'url' && steps.universal.outputs.pairs == '0' }}
-              continue-on-error: true
-              run: |
-                set -uo pipefail
-                if [ ! -f fetch-url.txt ]; then echo "ссылки нет — берём input.zip"; exit 0; fi
-                URL=$(tr -d '\r\n' < fetch-url.txt)
-                echo "ссылка на игру: $URL"
-                # Playson не берём браузером: ассеты лежат в манифесте game.<hash>.js,
-                # их разбирает наш экстрактор.
-                case "$URL" in
-                  *gameName=*|*box-int*|*playson*)
-                    echo "Playson — браузерный сейвер пропускаю, ассеты уже разобраны"
-                    rm -f fetch-url.txt; exit 0 ;;
-                esac
-                python3 -m pip install --quiet playwright aiohttp brotli
-                # Resources Saver: кладём распакованное расширение рядом с браузером
-                EXT_DIR="${RUNNER_TEMP}/Resources-Saver/src"
-                if [ ! -d "$EXT_DIR" ]; then
-                  git clone --depth 1 --quiet https://github.com/Alex313031/Resources-Saver.git \
-                    "${RUNNER_TEMP}/Resources-Saver" || true
-                fi
-                echo "SPINE_EXT_DIR=$EXT_DIR" >> "$GITHUB_ENV"
-                [ -d "$EXT_DIR" ] && echo "расширение Resources-Saver: подключено" || echo "расширение: недоступно, работаем без него"
-                # страховка от зависания: весь шаг обязан уложиться в 75 секунд
-                set +e
-                # файл + живой прогресс в логе; хвост читает отдельный процесс,
-                # поэтому браузер не может удержать шаг (в отличие от конвейера)
-                ( timeout -k 15 75 python3 -u .codespace/fetch_assets.py "$URL" -o input.zip \
-                    --max-mb 300 --total-budget 55 --budget-ms 18000 > fetch-log.txt 2>&1 ) &
-                FETCH_PID=$!
-                tail -n +1 -f fetch-log.txt &
-                TAIL_PID=$!
-                wait $FETCH_PID
-                RC=$?
-                kill $TAIL_PID >/dev/null 2>&1 || true
-                pkill -f 'chrome|chromium' >/dev/null 2>&1 || true
-                set -e
-                echo "выкачивание завершено с кодой $RC"
-                if [ "$RC" = "124" ] || [ "$RC" = "137" ]; then
-                  echo "::warning::выкачивание не уложилось в 75 секунд — берём то, что успело"
-                fi
-                rm -f fetch-url.txt
-                unzip -l input.zip | head -30 || true
-      
-            # ── Node-захват: Chromium нужен только запасному headless-сейверу ────────
-            # npm ci + playwright install chromium — это 35 секунд, которые до сих пор
-            # платили все игры без разбора. Ставим ровно тогда, когда сейвер реально
-            # понадобится: экстрактор не справился И это не Playson.
-            - name: Setup Node (только если нужен сейвер)
-              if: ${{ always() && steps.mode.outputs.mode == 'url' && steps.universal.outputs.pairs == '0' && !contains(steps.mode.outputs.url, 'gameName=') && !contains(steps.mode.outputs.url, 'box-int') }}
-              uses: actions/setup-node@v4
-              with:
-                node-version: '20'
-                cache: 'npm'
-      
-            - name: Install Node deps + Playwright Chromium
-              if: ${{ always() && steps.mode.outputs.mode == 'url' && steps.universal.outputs.pairs == '0' && !contains(steps.mode.outputs.url, 'gameName=') && !contains(steps.mode.outputs.url, 'box-int') }}
-              continue-on-error: true
-              run: |
-                set -uo pipefail
-                # install не должен утащить весь job: 7 минут потолок на оба шага
-                timeout -k 10 420 bash -c 'npm ci --no-audit --no-fund && npx playwright install chromium --with-deps' \
-                  > npm-install-log.txt 2>&1
-                RC=$?
-                tail -n 40 npm-install-log.txt
-                if [ "$RC" = "0" ]; then
-                  echo "node_modules и Chromium готовы"
-                  echo "NODE_READY=1" >> "$GITHUB_ENV"
-                else
-                  echo "::warning::установка Node/Chromium не удалась (код $RC) — сейвер пропустим"
-                fi
-                exit 0
-      
-            # ── Карточки сразу после обнаружения, не дожидаясь компиляции ─────────
-            # Сайт умеет открыть архив по имени (download?archive=…), поэтому кладём
-            # сырой input.zip отдельным файлом: браузер показывает анимации, пока CI
-            # ещё компилирует .spine.
-            - name: Publish raw archive (карточки до компиляции)
-              if: ${{ always() && steps.mode.outputs.mode == 'url' && hashFiles('input.zip') != '' }}
-              # Удобство для сайта, а не часть конвейера: если push не прошёл
-              # (например, архив перевалил за 100 МБ лимита GitHub), конверсия всё
-              # равно обязана дойти до компиляции — карточки появятся после него.
-              continue-on-error: true
-              env:
-                GITHUB_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
-              run: |
-                set -euo pipefail
-                JOB="$(git log -1 --format=%s)"
-                SZ=$(stat -c%s "$GITHUB_WORKSPACE/input.zip")
-                if [ "$SZ" -gt 99000000 ]; then
-                  echo "::warning::input.zip $((SZ / 1048576)) МБ — не влезает в ветку results (лимит 100 МБ), сырые карточки пропускаем"
-                  exit 0
-                fi
-                # В сообщении коммита намеренно НЕТ job id: /status?job= должен
-                # остаться «не готово», иначе сайт подумает, что компиляция закончена.
-                GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh "raw spine pairs $(date -u +%FT%TZ)" \
-                  "$GITHUB_WORKSPACE/input.zip:history/${JOB}-raw.zip"
-                echo "сырой архив опубликован: history/${JOB}-raw.zip ($(du -h "$GITHUB_WORKSPACE/input.zip" | cut -f1))"
-      
-            # ── Node-захват (URL-режим) ────────────────────────────────────────────
-            # Python-путь выше не трогаем: его бюджеты (55с/75с) — предел здоровья.
-            # Это запасной headless-сейвер, он только дополняет выборку и отчёт.
-            - name: Headless saver → ZIP + saver-report.json (URL-режим)
-              if: ${{ steps.mode.outputs.mode == 'url' && !contains(steps.mode.outputs.url, 'gameName=') && !contains(steps.mode.outputs.url, 'box-int') && steps.universal.outputs.pairs == '0' }}
-              continue-on-error: true
-              env:
-                URLS: ${{ steps.mode.outputs.url }}
-                GAME_URL: ${{ steps.mode.outputs.url }}
-                WAIT_MS: "35000"
-                OUTPUT_DIR: saver-out
-                HEADLESS: "true"
-              run: |
-                set -uo pipefail
-                if [ "${NODE_READY:-0}" != "1" ]; then
-                  echo "::warning::Node/Chromium не установлены — пропускаю захват"
-                  exit 0
-                fi
-                # потолок 5 минут на весь прогон (WAIT_MS=35с на прогон + доборка из манифестов)
-                set +e
-                timeout -k 10 300 node scripts/download-resources.mjs 2>&1 | tee saver-log.txt
-                RC=${PIPESTATUS[0]}
-                set -e
-                echo "сейвер завершился с кодом $RC"
-                if [ "$RC" = "124" ] || [ "$RC" = "137" ]; then
-                  echo "::warning::сейвер не уложился в 300 секунд — забираем то, что есть"
-                fi
-                ls -la saver-out || true
-                find saver-out -name 'saver-report.json' -exec cat {} \; || true
-                exit 0
-      
-            - name: spine-pack.mjs → res/spine/ (если скрипт есть)
-              if: steps.mode.outputs.mode == 'url'
-              continue-on-error: true
-              run: |
-                set -uo pipefail
-                if [ ! -f scripts/spine-pack.mjs ]; then
-                  echo "scripts/spine-pack.mjs нет в репозитории — раскладка пропущена"
-                  exit 0
-                fi
-                ZIP=$(ls -t saver-out/*.zip 2>/dev/null | head -1 || true)
-                if [ -z "${ZIP:-}" ]; then
-                  echo "ZIP сейвера не найден — раскладка не нужна"
-                  exit 0
-                fi
-                # раскладывает содержимое сейвера в res/spine/ (atlas/skel/bin + текстуры)
-                timeout -k 10 120 node scripts/spine-pack.mjs "$ZIP" res || \
-                  echo "::warning::spine-pack.mjs упал — раскладка частичная"
-                find res -type f 2>/dev/null | head -20 || true
-                exit 0
-      
-            - name: Добираем Spine в input.zip (если Python-путь ничего не нашёл)
-              if: steps.mode.outputs.mode == 'url'
-              continue-on-error: true
-              run: |
-                set -uo pipefail
-                # Строго дополнение: если в input.zip уже есть atlas/skel — не трогаем его.
-                # Ветка спасения нужна ровно для случая "ссылка была, Python не добрал Spine".
-                python3 - <<'PY'
-                import os, sys, zipfile, glob
-                src = "input.zip"
-                if not os.path.exists(src):
-                    sys.exit(0)
-                with zipfile.ZipFile(src) as z:
-                    names = z.namelist()
-                have = any(n.lower().endswith((".atlas", ".skel")) for n in names)
-                if have:
-                    print("в input.zip уже есть Spine — оставляем как есть")
-                    sys.exit(0)
-                cands = []
-                if os.path.isdir("res"):
-                    cands = ["res"]
-                else:
-                    cands = [d for d in glob.glob("saver-out/*/") if os.path.isfile(os.path.join(d, "saver-report.json"))]
-                cands = [d for d in cands if any(f.endswith((".atlas", ".skel")) for _, _, fs in os.walk(d) for f in fs)]
-                if not cands:
-                    print("ни Python, ни сейвер не нашли Spine — шаг пустой")
-                    sys.exit(0)
-                added = 0
-                with zipfile.ZipFile(src, "a", zipfile.ZIP_DEFLATED) as z:
-                    existing = set(names)
-                    for d in cands:
-                        for root, _, files in os.walk(d):
-                            for f in files:
-                                full = os.path.join(root, f)
-                                arc = os.path.relpath(full, d).replace(os.sep, "/")
-                                if arc in existing:
-                                    continue
-                                z.write(full, arc)
-                                added += 1
-                print("дописано из сейвера файлов: %d" % added)
-                PY
-                unzip -l input.zip | head -30
-                exit 0
-      
-            - name: Отчёт сейвера в summary (URL-режим)
-              if: ${{ always() && steps.mode.outputs.mode == 'url' }}
-              run: |
-                set -uo pipefail
-                N=$(find saver-out -type f 2>/dev/null | wc -l || true)
-                A=$(find saver-out -type f -name '*.atlas' 2>/dev/null | wc -l || true)
-                K=$(find saver-out -type f -name '*.skel'  2>/dev/null | wc -l || true)
-                B=$(find saver-out -type f -name '*.bin'   2>/dev/null | wc -l || true)
-                printf '### Headless saver (URL-режим)\nфайлов: %s | atlas: %s | skel: %s | bin: %s\n\n' \
-                  "$N" "$A" "$K" "$B" >> "$GITHUB_STEP_SUMMARY"
-      
-            - name: Hash analyzer → rename (hash→asset_name) if hashed
-              run: |
-                set -euo pipefail
-                test -f input.zip || { echo "input.zip не найден на ветке inbox"; exit 1; }
-                python3 .codespace/prepare_input.py input.zip input.zip
-      
-            - name: Unpack block → /images (atlases → subfolders, параллельно)
-              if: ${{ env.PLAYSAON != '1' || env.THREE_OAKS == '1' }}
-              run: |
-                set -euo pipefail
-                python3 -m pip install --quiet Pillow pillow-avif-plugin || \
-                  python3 -m pip install --quiet Pillow
-                python3 .codespace/unpack_block.py input.zip input.zip
-      
-            - name: Convert input.zip (native Linux converter, параллельно)
-              env:
-                CONVERT_WORKERS: "8"
-                # лечение битых скелетов (U+FFFD): SPINE_REPAIR=1 включает
-                SPINE_REPAIR: "1"
-                SPINE_REPAIR_BUDGET: "1200"
-                SPINE_REPAIR_MIN_CONFIDENCE: "0.5"
-                SPINE_REPAIR_MAX_FILES: "60"
-                SPINE_REPAIR_TIME_LIMIT: "20"
-                SPINE_REPAIR_ALLOW_TAIL: "0.2"
-              run: |
-                set -euo pipefail
-                test -f input.zip || { echo "input.zip не найден на ветке inbox"; exit 1; }
-                python3 .codespace/convert.py input.zip output.zip
-                unzip -l output.zip
-      
-            - name: Publish baseline results (json + images) to results branch
-              env:
-                GITHUB_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
-              run: |
-                set -euo pipefail
-                JOB="$(git log -1 --format=%s)"
-                echo "$JOB" > job-id.txt
-                GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh \
-                  "results baseline $(date -u +%FT%TZ) (job in artifact, ожидаем .spine)" \
-                  "$GITHUB_WORKSPACE/output.zip:output.zip"
-      
-            # ── Честный пустой результат ─────────────────────────────────────────
-            # Если Spine-пар не нашлось вовсе, публикуем пустой проход: сайт
-            # покажет «ничего не найдено», а не непонятную ошибку про unzip.
-            - name: Publish empty result (Spine не найден)
-              if: ${{ always() && hashFiles('output.zip') == '' }}
-              env:
-                GITHUB_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
-              run: |
-                set -euo pipefail
-                JOB="$(git log -1 --format=%s)"
-                rm -rf emptyout && mkdir -p emptyout/previews
-                printf '{"items": []}' > emptyout/previews/index.json
-                printf 'Spine-скелеты не найдены: экстракторы ничего не вытащили из этой игры.\n' > emptyout/report.txt
-                ( cd emptyout && zip -qr "$GITHUB_WORKSPACE/output.zip" . )
-                echo "$JOB" > job-id.txt
-                GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh "empty result ${JOB} $(date -u +%FT%TZ)" \
-                  "$GITHUB_WORKSPACE/output.zip:history/${JOB}.zip"
-                echo "пустой результат опубликован: history/${JOB}.zip"
-      
-            - name: Install x11/gl deps (headless Spine)
-              run: |
-                sudo apt-get update -q
-                sudo apt-get install -y -q \
-                  xvfb x11-xserver-utils x11-utils x11-xkb-utils \
-                  libgl1 libgl1-mesa-dri libglx-mesa0 libegl1 \
-                  libgtk-3-0t64 libxtst6 libxrender1 libxrandr2 libxinerama1 \
-                  libxcursor1 libxi6 libasound2t64 fonts-liberation || true
-                sudo ldconfig || true
-      
-            - name: Cache Spine editor bundle
-              uses: actions/cache@v4
-              with:
-                path: /tmp/spine
-                key: spine-linux-${{ runner.os }}-v1
-                restore-keys: |
-                  spine-linux-${{ runner.os }}-
-      
-            - name: Purge broken editor updates
-              run: |
-                set -euo pipefail
-                # кеш прошлых прогонов мог сохранить недоскачанный файл версии —
-                # редактор потом падает с "integrity check failed"
-                mkdir -p ~/.spine/updates
-                for f in ~/.spine/updates/*; do
-                  [ -f "$f" ] || continue
-                  sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
-                  if [ "$sz" -lt 5000000 ]; then echo "удаляю битую версию: $f ($sz байт)"; rm -f "$f"; fi
-                done
-                ls -la ~/.spine/updates || true
-      
-            - name: Download licensed Spine Linux launcher
-              env:
-                SPINE_LINUX_URL: ${{ secrets.SPINE_LINUX_URL }}
-              run: |
-                set -euo pipefail
-                if [ -x /tmp/spine/Spine/Spine.sh ]; then
-                  echo "Spine уже в кеше — пропускаю скачивание"
-                  exit 0
-                fi
-                curl -sL --max-time 600 --retry 2 -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36" \
-                  "$SPINE_LINUX_URL" -o /tmp/linux.gz
-                gzip -d /tmp/linux.gz
-                mkdir -p /tmp/spine
-                tar xf /tmp/linux -C /tmp/spine
-                ls /tmp/spine
-      
-            - name: "Compile block → .spine (все проекты одновременно)"
-              env:
-                SPINE_EDITOR: /tmp/spine/Spine/Spine.sh
-                SPINE_LICENSE: ${{ secrets.SPINE_LICENSE }}
-                SPINE_XMX: "768"
-                # все Spine-проекты стартуют одновременно: без пачек и без прогона
-                SPINE_BATCH: "0"
-                SPINE_WARMUP: "0"
-                SPINE_TIMEOUT: "2400"
-                # наборов бывает 25+, дефолтные 24 резали последний
-                SPINE_PREVIEW_MAX: "64"
-                SPINE_PREVIEW_PER_VERSION: "8"
-              run: |
-                set -euo pipefail
-                test -f work/output.zip || { echo "work/output.zip не найден"; exit 1; }
-                # Свой Xvfb на фиксированном дисплее: DISPLAY должен быть виден не только
-                # главному процессу Spine, но и его legacy-подпроцессу (редактор 3.8.99),
-                # иначе он падает с HeadlessException и всё уходит в 4.x
-                Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
-                for i in $(seq 1 30); do
-                  if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
-                  sleep 0.5
-                done
-                echo "DISPLAY=:99" >> "$GITHUB_ENV"
-                export DISPLAY=:99
-                printf '#!/bin/sh\nexec /tmp/spine/Spine/Spine.sh "$@"\n' > /tmp/spine-run.sh
-                chmod +x /tmp/spine-run.sh
-                xdpyinfo -display :99 | head -2 || true
-                echo "CPU: $(nproc) → все скелеты одним запуском, параллельно по числу ядер"
-      
-                # Компиляция Spine и распаковка спрайтов идут ОДНОВРЕМЕННО,
-                # каждая в своей копии архива; в конце быстро мержим в финальный zip.
-                cp work/output.zip work/compile.zip
-                rm -rf work/sprites-src work/sprites-out
-                mkdir -p work/sprites-src work/sprites-out
-                unzip -q work/output.zip -d work/sprites-src
-      
-                python3 -m pip install --quiet Pillow
-      
-                ( python3 .codespace/unpack_atlases.py work/sprites-src --output work/sprites-out \
-                    > /tmp/sprites.log 2>&1; echo $? > /tmp/sprites.rc ) &
-                SPRITES_PID=$!
-                echo "распаковка спрайтов запущена в фоне (pid $SPRITES_PID)"
-      
-                # жёсткий лимит на компиляцию + одна повторная попытка:
-                # без этого job может висеть на Spine бесконечно
-                set +e
-                timeout --kill-after=120 "$SPINE_TIMEOUT" \
-                  python3 .codespace/compile_block.py work/compile.zip work/compile.zip
-                COMPILE_RC=$?
-                if [ "$COMPILE_RC" -ne 0 ]; then
-                  echo "компиляция Spine не удалась (код $COMPILE_RC) — повторяю один раз"
-                  timeout --kill-after=120 "$SPINE_TIMEOUT" \
-                    python3 .codespace/compile_block.py work/compile.zip work/compile.zip
-                  COMPILE_RC=$?
-                fi
-                set -e
-                echo "компиляция Spine завершилась с кодом $COMPILE_RC"
-      
-                wait "$SPRITES_PID" || true
-                SPRITES_RC="$(cat /tmp/sprites.rc 2>/dev/null || echo 1)"
-                echo "распаковка спрайтов завершилась с кодом $SPRITES_RC, спрайтов: $(find work/sprites-out -type f 2>/dev/null | wc -l)"
-                [ "$SPRITES_RC" = "0" ] || tail -20 /tmp/sprites.log || true
-      
-                python3 .codespace/merge_sprites_into_zip.py work/compile.zip work/sprites-out work/output.zip
-                unzip -l work/output.zip | tail -5
-      
-            - name: Logout Spine license
-              if: always()
-              run: |
-                timeout 300 /tmp/spine/Spine/Spine.sh -l 2>&1 | tail -20 || true
-      
-            - name: Publish final results (with .spine) to results branch + history
-              env:
-                GITHUB_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
-              run: |
-                set -euo pipefail
-                JOB="$(cat work/job-id.txt 2>/dev/null || true)"
-                [ -n "${JOB}" ] || JOB="${{ github.event.head_commit.message }}"
-                SAFE="$(printf '%s' "$JOB" | tr -c 'A-Za-z0-9._-' '_')"
-                NOW="$(date -u +%FT%TZ)"
-                cp work/output.zip /tmp/publish-output.zip
-                BYTES="$(stat -c %s /tmp/publish-output.zip)"
-                SPINE="$(unzip -l /tmp/publish-output.zip | grep -c '\.spine$' || true)"
-                # index.json лежит в ветке results уже давно: читаем его ОТТУДА,
-                # иначе новый прогон затёр бы весь список истории.
-                export EXTRACT="history/index.json:$RUNNER_TEMP/results-index.json"
-                GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh "читаем историю" || true
-                unset EXTRACT
-                URL="${{ steps.mode.outputs.url }}" JOB="$JOB" SAFE="$SAFE" NOW="$NOW" BYTES="$BYTES" SPINE="$SPINE" python3 - <<'PY'
-                import json, os, re, urllib.request, urllib.parse, html
-                path = os.environ["RUNNER_TEMP"] + "/results-index.json"
-                items = []
-                if os.path.exists(path):
-                    try:
-                        items = json.load(open(path, encoding="utf-8")).get("items", [])
-                    except Exception:
-                        items = []
-                title = ""
-                fmt = ""
-                url = os.environ.get("URL", "").strip()
-                if url:
-                    try:
-                        parsed = urllib.parse.urlparse(url)
-                        parts = [p for p in parsed.path.split("/") if p]
-                        # 3Oaks play links identify the game in /games/<slug>/play.
-                        if len(parts) >= 3 and parts[0] == "games" and parts[2] == "play":
-                            # Use the game slug exactly as it appears in the URL.
-                            title = parts[1]
-                    except Exception:
-                        pass
-                    if not title:
-                        try:
-                            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                            page = urllib.request.urlopen(req, timeout=8).read(2_000_000).decode("utf-8", "ignore")
-                            m = re.search(r"<title[^>]*>(.*?)</title>", page, re.I | re.S)
-                            if m:
-                                title = html.unescape(re.sub(r"\s+", " ", m.group(1))).strip()
-                                title = re.sub(r"\s*[|–—-]\s*[^|–—-]+$", "", title).strip()
-                        except Exception:
-                            pass
-                # Не выводим формат по упоминанию в отчёте: это может быть
-                # формат нормализации, а не исходных файлов игры. Без подтверждения оставляем только имя игры.
-                display = title + (" | " + fmt if title and fmt else "")
-                entry = {
-                    "job": os.environ["JOB"],
-                    "title": display,
-                    "file": "history/%s.zip" % os.environ["SAFE"],
-                    "bytes": int(os.environ["BYTES"]),
-                    "date": os.environ["NOW"],
-                    "spine": int(os.environ["SPINE"] or 0) > 0,
-                }
-                items = [i for i in items if i.get("job") != entry["job"]]
-                items.insert(0, entry)
-                json.dump({"items": items}, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-                PY
-                GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh "results ${JOB} +<spine> ${NOW}" \
-                  "/tmp/publish-output.zip:output.zip" \
-                  "/tmp/publish-output.zip:history/${SAFE}.zip" \
-                  "$RUNNER_TEMP/results-index.json:history/index.json"
-      
+      - name: Overlay tooling from main (inbox has only input.zip + workflow)
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth 1
+          # package.json/package-lock.json/scripts нужны URL-режиму (Node-захват),
+          # иначе setup-node(cache:npm) и npm ci падают — на inbox их нет
+          git checkout origin/main -- .codespace backend package.json package-lock.json scripts
+          git status --short
+
+      - name: Detect mode (ссылка или готовый input.zip)
+        id: mode
+        run: |
+          set -euo pipefail
+          if [ -f fetch-url.txt ]; then
+            URL=$(tr -d '\r\n' < fetch-url.txt)
+            echo "mode=url" >> "$GITHUB_OUTPUT"
+            echo "url=$URL" >> "$GITHUB_OUTPUT"
+            echo "SAVER_URL=$URL" >> "$GITHUB_ENV"
+            echo "ссылка на игру: $URL"
+          else
+            echo "mode=zip" >> "$GITHUB_OUTPUT"
+            echo "ссылки нет — берём input.zip, Node-захват пропускаем"
+          fi
+
+      # Playson: ассеты не в UHT-паках, а в манифесте внутри game.<hash>.js;
+      # скелеты бинарные. Для них нужен наш экстрактор, а не браузерный сейвер.
+      - name: Playson — экстрактор Spine-пар
+        if: ${{ always() && steps.mode.outputs.mode == 'url' }}
+        continue-on-error: true
+        env:
+          URL: ${{ steps.mode.outputs.url }}
+        run: |
+          set -uo pipefail
+          SYM=$(printf '%s' "$URL" | sed -n 's/.*[?&]gameSymbol=\([^&]*\).*/\1/p; s/.*[?&]symbol=\([^&]*\).*/\1/p' | head -1)
+          case "$SYM" in vs*) echo "это PragmaticPlay, Playson-шаг не нужен"; exit 0 ;; esac
+          case "$URL" in
+            *gameName=*|*box-int*|*playson*) ;;
+            *) echo "не Playson — пропускаю"; exit 0 ;;
+          esac
+          OUT="$RUNNER_TEMP/pl"
+          rm -rf "$OUT"
+          python3 .codespace/pg-extractor/extract_playson.py "$URL" -o "$OUT" || true
+          N=$(find "$OUT/spine" -name '*.skel' -o -name '*.json' 2>/dev/null | wc -l)
+          echo "Playson: скелетов $N"
+          if [ "$N" -eq 0 ]; then
+            echo "::warning::Playson-экстрактор не нашёл Spine-скелетов"
+            exit 0
+          fi
+          # Собираем input.zip из найденных пар — дальше пойдёт общий конвейер
+          # (unpack → convert → .spine → превью → публикация в history).
+          rm -f input.zip
+          mkdir -p pg_out
+          cp -R "$OUT/spine" pg_out/
+          cp -R "$OUT/textures" pg_out/ 2>/dev/null || true
+          cp "$OUT/playson-manifest.json" pg_out/ 2>/dev/null || true
+          # карточки для сайта + готовый zip на каждую пару
+          python3 .codespace/pg-extractor/make_previews_index.py "$PWD/pg_out" || true
+          ( cd pg_out && zip -qr "$GITHUB_WORKSPACE/input.zip" . )
+          echo "input.zip собран из Playson-пар: $(unzip -l input.zip | tail -1)"
+          echo "PLAYSAON=1" >> "$GITHUB_ENV"
+
+      # ── Универсальный экстрактор Spine ─────────────────────────────────────
+      # Один шаг на любую ссылку, без выбора провайдера. Несколько стратегий
+      # запускаются ВСЕ; каждая сама решает, подходит ли она, по доказательствам
+      # (gameSymbol в ссылке, og:image, бандлы, assets/packs/…), а не по домену.
+      # Всё наловленное сваливается в общий пул; его разбирает универсальный
+      # детектор — он сам ищет атласы, скелеты (JSON и бинарные) и страницы.
+      - name: Универсальный экстрактор Spine
+        id: universal
+        if: ${{ always() && steps.mode.outputs.mode == 'url' }}
+        continue-on-error: true
+        env:
+          URL: ${{ steps.mode.outputs.url }}
+        run: |
+          set -uo pipefail
+          # 3Oaks может отдавать только WEBP/AVIF. Pillow нужен точному
+          # экстрактору до запуска браузерного fallback.
+          python3 -m pip install --quiet Pillow pillow-avif-plugin || \
+            python3 -m pip install --quiet Pillow
+          echo "pairs=0" >> "$GITHUB_OUTPUT"
+          OUT="$RUNNER_TEMP/universal"
+          rm -rf "$OUT"
+          python3 .codespace/universal/run.py "$URL" --out "$OUT" 2>&1 | tail -90 || true
+          echo "--- отчёт универсального экстрактора:"
+          cat "$OUT/universal-report.json" 2>/dev/null || echo "отчёта нет"
+          N=$(find "$OUT/extracted/spine" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+          echo "универсальный детектор: проектов $N"
+          if [ "$N" -eq 0 ]; then
+            echo "::warning::универсальный детектор не нашёл ни одного Spine-проекта"
+            exit 0
+          fi
+          N=$(bash .codespace/assemble_spine_pairs.sh "$OUT/extracted/spine" "$GITHUB_WORKSPACE" 85 | tail -1)
+          if [ "${N:-0}" -eq 0 ]; then
+            echo "::warning::сборка input.zip не удалась"
+            exit 0
+          fi
+          echo "input.zip собран универсальным экстрактором: $(unzip -l input.zip | tail -1)"
+          # Не меняем старый skip-путь Playson/Pragmatic. Только для 3Oaks
+          # включаем обязательную нарезку атласов после WEBP/AVIF→PNG.
+          if python3 - <<'PY'
+          import json, os
+          p = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "universal",
+                                          "universal-report.json"), encoding="utf-8"))
+          raise SystemExit(0 if any(x.get("стратегия") == "3oaks" and x.get("подошла")
+                                    for x in p.get("стратегии", [])) else 1)
+          PY
+          then
+            echo "THREE_OAKS=1" >> "$GITHUB_ENV"
+            echo "3Oaks: PNG-нормализация и нарезка включены"
+          else
+            echo "PLAYSAON=1" >> "$GITHUB_ENV"
+          fi
+          echo "pairs=$N" >> "$GITHUB_OUTPUT"
+
+      # ── Браузерный сейвер: запасной путь, а не основной ────────────────────
+      # Раньше он шёл ПЕРВЫМ и для каждой ссылки нагло браузером 60–75 секунд,
+      # после чего его input.zip перезаписывался экстрактором. Для игр, где
+      # экстрактор справляется, это была чистая потеря времени — больше всех
+      # стоила она на PragmaticPlay (62 с из 553). Теперь браузер включается
+      # только когда экстрактор не нашёл ни одной пары.
+      - name: Fetch game assets by URL (если экстрактор ничего не нашёл)
+        id: browser
+        if: ${{ always() && steps.mode.outputs.mode == 'url' && steps.universal.outputs.pairs == '0' }}
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [ ! -f fetch-url.txt ]; then echo "ссылки нет — берём input.zip"; exit 0; fi
+          URL=$(tr -d '\r\n' < fetch-url.txt)
+          echo "ссылка на игру: $URL"
+          # Playson не берём браузером: ассеты лежат в манифесте game.<hash>.js,
+          # их разбирает наш экстрактор.
+          case "$URL" in
+            *gameName=*|*box-int*|*playson*)
+              echo "Playson — браузерный сейвер пропускаю, ассеты уже разобраны"
+              rm -f fetch-url.txt; exit 0 ;;
+          esac
+          python3 -m pip install --quiet playwright aiohttp brotli
+          # Resources Saver: кладём распакованное расширение рядом с браузером
+          EXT_DIR="${RUNNER_TEMP}/Resources-Saver/src"
+          if [ ! -d "$EXT_DIR" ]; then
+            git clone --depth 1 --quiet https://github.com/Alex313031/Resources-Saver.git \
+              "${RUNNER_TEMP}/Resources-Saver" || true
+          fi
+          echo "SPINE_EXT_DIR=$EXT_DIR" >> "$GITHUB_ENV"
+          [ -d "$EXT_DIR" ] && echo "расширение Resources-Saver: подключено" || echo "расширение: недоступно, работаем без него"
+          # страховка от зависания: весь шаг обязан уложиться в 75 секунд
+          set +e
+          # файл + живой прогресс в логе; хвост читает отдельный процесс,
+          # поэтому браузер не может удержать шаг (в отличие от конвейера)
+          ( timeout -k 15 75 python3 -u .codespace/fetch_assets.py "$URL" -o input.zip \
+              --max-mb 300 --total-budget 55 --budget-ms 18000 > fetch-log.txt 2>&1 ) &
+          FETCH_PID=$!
+          tail -n +1 -f fetch-log.txt &
+          TAIL_PID=$!
+          wait $FETCH_PID
+          RC=$?
+          kill $TAIL_PID >/dev/null 2>&1 || true
+          pkill -f 'chrome|chromium' >/dev/null 2>&1 || true
+          set -e
+          echo "выкачивание завершено с кодой $RC"
+          if [ "$RC" = "124" ] || [ "$RC" = "137" ]; then
+            echo "::warning::выкачивание не уложилось в 75 секунд — берём то, что успело"
+          fi
+          rm -f fetch-url.txt
+          unzip -l input.zip | head -30 || true
+
+      # ── Node-захват: Chromium нужен только запасному headless-сейверу ────────
+      # npm ci + playwright install chromium — это 35 секунд, которые до сих пор
+      # платили все игры без разбора. Ставим ровно тогда, когда сейвер реально
+      # понадобится: экстрактор не справился И это не Playson.
+      - name: Setup Node (только если нужен сейвер)
+        if: ${{ always() && steps.mode.outputs.mode == 'url' && steps.universal.outputs.pairs == '0' && !contains(steps.mode.outputs.url, 'gameName=') && !contains(steps.mode.outputs.url, 'box-int') }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Node deps + Playwright Chromium
+        if: ${{ always() && steps.mode.outputs.mode == 'url' && steps.universal.outputs.pairs == '0' && !contains(steps.mode.outputs.url, 'gameName=') && !contains(steps.mode.outputs.url, 'box-int') }}
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # install не должен утащить весь job: 7 минут потолок на оба шага
+          timeout -k 10 420 bash -c 'npm ci --no-audit --no-fund && npx playwright install chromium --with-deps' \
+            > npm-install-log.txt 2>&1
+          RC=$?
+          tail -n 40 npm-install-log.txt
+          if [ "$RC" = "0" ]; then
+            echo "node_modules и Chromium готовы"
+            echo "NODE_READY=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::установка Node/Chromium не удалась (код $RC) — сейвер пропустим"
+          fi
+          exit 0
+
+      # ── Карточки сразу после обнаружения, не дожидаясь компиляции ─────────
+      # Сайт умеет открыть архив по имени (download?archive=…), поэтому кладём
+      # сырой input.zip отдельным файлом: браузер показывает анимации, пока CI
+      # ещё компилирует .spine.
+      - name: Publish raw archive (карточки до компиляции)
+        if: ${{ always() && steps.mode.outputs.mode == 'url' && hashFiles('input.zip') != '' }}
+        # Удобство для сайта, а не часть конвейера: если push не прошёл
+        # (например, архив перевалил за 100 МБ лимита GitHub), конверсия всё
+        # равно обязана дойти до компиляции — карточки появятся после него.
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          JOB="$(git log -1 --format=%s)"
+          SZ=$(stat -c%s "$GITHUB_WORKSPACE/input.zip")
+          if [ "$SZ" -gt 99000000 ]; then
+            echo "::warning::input.zip $((SZ / 1048576)) МБ — не влезает в ветку results (лимит 100 МБ), сырые карточки пропускаем"
+            exit 0
+          fi
+          # В сообщении коммита намеренно НЕТ job id: /status?job= должен
+          # остаться «не готово», иначе сайт подумает, что компиляция закончена.
+          GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh "raw spine pairs $(date -u +%FT%TZ)" \
+            "$GITHUB_WORKSPACE/input.zip:history/${JOB}-raw.zip"
+          echo "сырой архив опубликован: history/${JOB}-raw.zip ($(du -h "$GITHUB_WORKSPACE/input.zip" | cut -f1))"
+
+      # ── Node-захват (URL-режим) ────────────────────────────────────────────
+      # Python-путь выше не трогаем: его бюджеты (55с/75с) — предел здоровья.
+      # Это запасной headless-сейвер, он только дополняет выборку и отчёт.
+      - name: Headless saver → ZIP + saver-report.json (URL-режим)
+        if: ${{ steps.mode.outputs.mode == 'url' && !contains(steps.mode.outputs.url, 'gameName=') && !contains(steps.mode.outputs.url, 'box-int') && steps.universal.outputs.pairs == '0' }}
+        continue-on-error: true
+        env:
+          URLS: ${{ steps.mode.outputs.url }}
+          GAME_URL: ${{ steps.mode.outputs.url }}
+          WAIT_MS: "35000"
+          OUTPUT_DIR: saver-out
+          HEADLESS: "true"
+        run: |
+          set -uo pipefail
+          if [ "${NODE_READY:-0}" != "1" ]; then
+            echo "::warning::Node/Chromium не установлены — пропускаю захват"
+            exit 0
+          fi
+          # потолок 5 минут на весь прогон (WAIT_MS=35с на прогон + доборка из манифестов)
+          set +e
+          timeout -k 10 300 node scripts/download-resources.mjs 2>&1 | tee saver-log.txt
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "сейвер завершился с кодом $RC"
+          if [ "$RC" = "124" ] || [ "$RC" = "137" ]; then
+            echo "::warning::сейвер не уложился в 300 секунд — забираем то, что есть"
+          fi
+          ls -la saver-out || true
+          find saver-out -name 'saver-report.json' -exec cat {} \; || true
+          exit 0
+
+      - name: spine-pack.mjs → res/spine/ (если скрипт есть)
+        if: steps.mode.outputs.mode == 'url'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [ ! -f scripts/spine-pack.mjs ]; then
+            echo "scripts/spine-pack.mjs нет в репозитории — раскладка пропущена"
+            exit 0
+          fi
+          ZIP=$(ls -t saver-out/*.zip 2>/dev/null | head -1 || true)
+          if [ -z "${ZIP:-}" ]; then
+            echo "ZIP сейвера не найден — раскладка не нужна"
+            exit 0
+          fi
+          # раскладывает содержимое сейвера в res/spine/ (atlas/skel/bin + текстуры)
+          timeout -k 10 120 node scripts/spine-pack.mjs "$ZIP" res || \
+            echo "::warning::spine-pack.mjs упал — раскладка частичная"
+          find res -type f 2>/dev/null | head -20 || true
+          exit 0
+
+      - name: Добираем Spine в input.zip (если Python-путь ничего не нашёл)
+        if: steps.mode.outputs.mode == 'url'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # Строго дополнение: если в input.zip уже есть atlas/skel — не трогаем его.
+          # Ветка спасения нужна ровно для случая "ссылка была, Python не добрал Spine".
+          python3 - <<'PY'
+          import os, sys, zipfile, glob
+          src = "input.zip"
+          if not os.path.exists(src):
+              sys.exit(0)
+          with zipfile.ZipFile(src) as z:
+              names = z.namelist()
+          have = any(n.lower().endswith((".atlas", ".skel")) for n in names)
+          if have:
+              print("в input.zip уже есть Spine — оставляем как есть")
+              sys.exit(0)
+          cands = []
+          if os.path.isdir("res"):
+              cands = ["res"]
+          else:
+              cands = [d for d in glob.glob("saver-out/*/") if os.path.isfile(os.path.join(d, "saver-report.json"))]
+          cands = [d for d in cands if any(f.endswith((".atlas", ".skel")) for _, _, fs in os.walk(d) for f in fs)]
+          if not cands:
+              print("ни Python, ни сейвер не нашли Spine — шаг пустой")
+              sys.exit(0)
+          added = 0
+          with zipfile.ZipFile(src, "a", zipfile.ZIP_DEFLATED) as z:
+              existing = set(names)
+              for d in cands:
+                  for root, _, files in os.walk(d):
+                      for f in files:
+                          full = os.path.join(root, f)
+                          arc = os.path.relpath(full, d).replace(os.sep, "/")
+                          if arc in existing:
+                              continue
+                          z.write(full, arc)
+                          added += 1
+          print("дописано из сейвера файлов: %d" % added)
+          PY
+          unzip -l input.zip | head -30
+          exit 0
+
+      - name: Отчёт сейвера в summary (URL-режим)
+        if: ${{ always() && steps.mode.outputs.mode == 'url' }}
+        run: |
+          set -uo pipefail
+          N=$(find saver-out -type f 2>/dev/null | wc -l || true)
+          A=$(find saver-out -type f -name '*.atlas' 2>/dev/null | wc -l || true)
+          K=$(find saver-out -type f -name '*.skel'  2>/dev/null | wc -l || true)
+          B=$(find saver-out -type f -name '*.bin'   2>/dev/null | wc -l || true)
+          printf '### Headless saver (URL-режим)\nфайлов: %s | atlas: %s | skel: %s | bin: %s\n\n' \
+            "$N" "$A" "$K" "$B" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hash analyzer → rename (hash→asset_name) if hashed
+        run: |
+          set -euo pipefail
+          test -f input.zip || { echo "input.zip не найден на ветке inbox"; exit 1; }
+          python3 .codespace/prepare_input.py input.zip input.zip
+
+      - name: Unpack block → /images (atlases → subfolders, параллельно)
+        if: ${{ env.PLAYSAON != '1' || env.THREE_OAKS == '1' }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet Pillow pillow-avif-plugin || \
+            python3 -m pip install --quiet Pillow
+          python3 .codespace/unpack_block.py input.zip input.zip
+
+      - name: Convert input.zip (native Linux converter, параллельно)
+        env:
+          CONVERT_WORKERS: "8"
+          # лечение битых скелетов (U+FFFD): SPINE_REPAIR=1 включает
+          SPINE_REPAIR: "1"
+          SPINE_REPAIR_BUDGET: "1200"
+          SPINE_REPAIR_MIN_CONFIDENCE: "0.5"
+          SPINE_REPAIR_MAX_FILES: "60"
+          SPINE_REPAIR_TIME_LIMIT: "20"
+          SPINE_REPAIR_ALLOW_TAIL: "0.2"
+        run: |
+          set -euo pipefail
+          test -f input.zip || { echo "input.zip не найден на ветке inbox"; exit 1; }
+          python3 .codespace/convert.py input.zip output.zip
+          unzip -l output.zip
+
+      - name: Publish baseline results (json + images) to results branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          JOB="$(git log -1 --format=%s)"
+          echo "$JOB" > job-id.txt
+          GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh \
+            "results baseline $(date -u +%FT%TZ) (job in artifact, ожидаем .spine)" \
+            "$GITHUB_WORKSPACE/output.zip:output.zip"
+
+      # ── Честный пустой результат ─────────────────────────────────────────
+      # Если Spine-пар не нашлось вовсе, публикуем пустой проход: сайт
+      # покажет «ничего не найдено», а не непонятную ошибку про unzip.
+      - name: Publish empty result (Spine не найден)
+        if: ${{ always() && hashFiles('output.zip') == '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          JOB="$(git log -1 --format=%s)"
+          rm -rf emptyout && mkdir -p emptyout/previews
+          printf '{"items": []}' > emptyout/previews/index.json
+          printf 'Spine-скелеты не найдены: экстракторы ничего не вытащили из этой игры.\n' > emptyout/report.txt
+          ( cd emptyout && zip -qr "$GITHUB_WORKSPACE/output.zip" . )
+          echo "$JOB" > job-id.txt
+          GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh "empty result ${JOB} $(date -u +%FT%TZ)" \
+            "$GITHUB_WORKSPACE/output.zip:history/${JOB}.zip"
+          echo "пустой результат опубликован: history/${JOB}.zip"
+
+      - name: Install x11/gl deps (headless Spine)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q \
+            xvfb x11-xserver-utils x11-utils x11-xkb-utils \
+            libgl1 libgl1-mesa-dri libglx-mesa0 libegl1 \
+            libgtk-3-0t64 libxtst6 libxrender1 libxrandr2 libxinerama1 \
+            libxcursor1 libxi6 libasound2t64 fonts-liberation || true
+          sudo ldconfig || true
+
+      - name: Cache Spine editor bundle
+        uses: actions/cache@v4
+        with:
+          path: /tmp/spine
+          key: spine-linux-${{ runner.os }}-v1
+          restore-keys: |
+            spine-linux-${{ runner.os }}-
+
+      - name: Purge broken editor updates
+        run: |
+          set -euo pipefail
+          # кеш прошлых прогонов мог сохранить недоскачанный файл версии —
+          # редактор потом падает с "integrity check failed"
+          mkdir -p ~/.spine/updates
+          for f in ~/.spine/updates/*; do
+            [ -f "$f" ] || continue
+            sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            if [ "$sz" -lt 5000000 ]; then echo "удаляю битую версию: $f ($sz байт)"; rm -f "$f"; fi
+          done
+          ls -la ~/.spine/updates || true
+
+      - name: Download licensed Spine Linux launcher
+        env:
+          SPINE_LINUX_URL: ${{ secrets.SPINE_LINUX_URL }}
+        run: |
+          set -euo pipefail
+          if [ -x /tmp/spine/Spine/Spine.sh ]; then
+            echo "Spine уже в кеше — пропускаю скачивание"
+            exit 0
+          fi
+          curl -sL --max-time 600 --retry 2 -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36" \
+            "$SPINE_LINUX_URL" -o /tmp/linux.gz
+          gzip -d /tmp/linux.gz
+          mkdir -p /tmp/spine
+          tar xf /tmp/linux -C /tmp/spine
+          ls /tmp/spine
+
+      - name: "Compile block → .spine (все проекты одновременно)"
+        env:
+          SPINE_EDITOR: /tmp/spine/Spine/Spine.sh
+          SPINE_LICENSE: ${{ secrets.SPINE_LICENSE }}
+          SPINE_XMX: "768"
+          # все Spine-проекты стартуют одновременно: без пачек и без прогона
+          SPINE_BATCH: "0"
+          SPINE_WARMUP: "0"
+          SPINE_TIMEOUT: "2400"
+          # наборов бывает 25+, дефолтные 24 резали последний
+          SPINE_PREVIEW_MAX: "64"
+          SPINE_PREVIEW_PER_VERSION: "8"
+        run: |
+          set -euo pipefail
+          test -f work/output.zip || { echo "work/output.zip не найден"; exit 1; }
+          # Свой Xvfb на фиксированном дисплее: DISPLAY должен быть виден не только
+          # главному процессу Spine, но и его legacy-подпроцессу (редактор 3.8.99),
+          # иначе он падает с HeadlessException и всё уходит в 4.x
+          Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+          for i in $(seq 1 30); do
+            if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          export DISPLAY=:99
+          printf '#!/bin/sh\nexec /tmp/spine/Spine/Spine.sh "$@"\n' > /tmp/spine-run.sh
+          chmod +x /tmp/spine-run.sh
+          xdpyinfo -display :99 | head -2 || true
+          echo "CPU: $(nproc) → все скелеты одним запуском, параллельно по числу ядер"
+
+          # Компиляция Spine и распаковка спрайтов идут ОДНОВРЕМЕННО,
+          # каждая в своей копии архива; в конце быстро мержим в финальный zip.
+          cp work/output.zip work/compile.zip
+          rm -rf work/sprites-src work/sprites-out
+          mkdir -p work/sprites-src work/sprites-out
+          unzip -q work/output.zip -d work/sprites-src
+
+          python3 -m pip install --quiet Pillow
+
+          ( python3 .codespace/unpack_atlases.py work/sprites-src --output work/sprites-out \
+              > /tmp/sprites.log 2>&1; echo $? > /tmp/sprites.rc ) &
+          SPRITES_PID=$!
+          echo "распаковка спрайтов запущена в фоне (pid $SPRITES_PID)"
+
+          # жёсткий лимит на компиляцию + одна повторная попытка:
+          # без этого job может висеть на Spine бесконечно
+          set +e
+          timeout --kill-after=120 "$SPINE_TIMEOUT" \
+            python3 .codespace/compile_block.py work/compile.zip work/compile.zip
+          COMPILE_RC=$?
+          if [ "$COMPILE_RC" -ne 0 ]; then
+            echo "компиляция Spine не удалась (код $COMPILE_RC) — повторяю один раз"
+            timeout --kill-after=120 "$SPINE_TIMEOUT" \
+              python3 .codespace/compile_block.py work/compile.zip work/compile.zip
+            COMPILE_RC=$?
+          fi
+          set -e
+          echo "компиляция Spine завершилась с кодом $COMPILE_RC"
+
+          wait "$SPRITES_PID" || true
+          SPRITES_RC="$(cat /tmp/sprites.rc 2>/dev/null || echo 1)"
+          echo "распаковка спрайтов завершилась с кодом $SPRITES_RC, спрайтов: $(find work/sprites-out -type f 2>/dev/null | wc -l)"
+          [ "$SPRITES_RC" = "0" ] || tail -20 /tmp/sprites.log || true
+
+          python3 .codespace/merge_sprites_into_zip.py work/compile.zip work/sprites-out work/output.zip
+          unzip -l work/output.zip | tail -5
+
+      - name: Logout Spine license
+        if: always()
+        run: |
+          timeout 300 /tmp/spine/Spine/Spine.sh -l 2>&1 | tail -20 || true
+
+      - name: Publish final results (with .spine) to results branch + history
+        env:
+          GITHUB_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          JOB="$(cat work/job-id.txt 2>/dev/null || true)"
+          [ -n "${JOB}" ] || JOB="${{ github.event.head_commit.message }}"
+          SAFE="$(printf '%s' "$JOB" | tr -c 'A-Za-z0-9._-' '_')"
+          NOW="$(date -u +%FT%TZ)"
+          cp work/output.zip /tmp/publish-output.zip
+          BYTES="$(stat -c %s /tmp/publish-output.zip)"
+          SPINE="$(unzip -l /tmp/publish-output.zip | grep -c '\.spine$' || true)"
+          # index.json лежит в ветке results уже давно: читаем его ОТТУДА,
+          # иначе новый прогон затёр бы весь список истории.
+          export EXTRACT="history/index.json:$RUNNER_TEMP/results-index.json"
+          GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh "читаем историю" || true
+          unset EXTRACT
+          URL="${{ steps.mode.outputs.url }}" JOB="$JOB" SAFE="$SAFE" NOW="$NOW" BYTES="$BYTES" SPINE="$SPINE" python3 - <<'PY'
+          import json, os, re, urllib.request, urllib.parse, html
+          path = os.environ["RUNNER_TEMP"] + "/results-index.json"
+          items = []
+          if os.path.exists(path):
+              try:
+                  items = json.load(open(path, encoding="utf-8")).get("items", [])
+              except Exception:
+                  items = []
+          title = ""
+          fmt = ""
+          url = os.environ.get("URL", "").strip()
+          if url:
+              try:
+                  parsed = urllib.parse.urlparse(url)
+                  parts = [p for p in parsed.path.split("/") if p]
+                  # 3Oaks play links identify the game in /games/<slug>/play.
+                  if len(parts) >= 3 and parts[0] == "games" and parts[2] == "play":
+                      # Use the game slug exactly as it appears in the URL.
+                      title = parts[1]
+              except Exception:
+                  pass
+              if not title:
+                  try:
+                      req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                      page = urllib.request.urlopen(req, timeout=8).read(2_000_000).decode("utf-8", "ignore")
+                      m = re.search(r"<title[^>]*>(.*?)</title>", page, re.I | re.S)
+                      if m:
+                          title = html.unescape(re.sub(r"\s+", " ", m.group(1))).strip()
+                          title = re.sub(r"\s*[|–—-]\s*[^|–—-]+$", "", title).strip()
+                  except Exception:
+                      pass
+          # Не выводим формат по упоминанию в отчёте: это может быть
+          # формат нормализации, а не исходных файлов игры. Без подтверждения оставляем только имя игры.
+          display = title + (" | " + fmt if title and fmt else "")
+          entry = {
+              "job": os.environ["JOB"],
+              "title": display,
+              "file": "history/%s.zip" % os.environ["SAFE"],
+              "bytes": int(os.environ["BYTES"]),
+              "date": os.environ["NOW"],
+              "spine": int(os.environ["SPINE"] or 0) > 0,
+          }
+          items = [i for i in items if i.get("job") != entry["job"]]
+          items.insert(0, entry)
+          json.dump({"items": items}, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+          PY
+          GITHUB_REPOSITORY="$GH_REPO" bash .codespace/publish-results.sh "results ${JOB} +<spine> ${NOW}" \
+            "/tmp/publish-output.zip:output.zip" \
+            "/tmp/publish-output.zip:history/${SAFE}.zip" \
+            "$RUNNER_TEMP/results-index.json:history/index.json"
+
       - name: Clean processed private inbox branch
         if: success()
         env:
