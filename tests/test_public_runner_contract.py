@@ -66,6 +66,20 @@ class PublicRunnerContractTests(unittest.TestCase):
                 self.assertIn("if: false # PSD, Spine projects", source)
                 self.assertNotIn("secrets.ACCESS_TOKEN", source)
 
+    def test_web_convert_is_a_public_private-source_queue_worker(self):
+        source = (ROOT / ".github" / "workflows" / "web-convert-public.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_call:", source)
+        self.assertIn("check-inbox:", source)
+        self.assertIn("convert-and-compile:", source)
+        self.assertIn("runs-on: ubuntu-24.04", source)
+        self.assertIn("repos/vladleopold/3Spine-core/branches/inbox", source)
+        self.assertIn("secrets.SOURCE_REPO_TOKEN", source)
+        self.assertIn("secrets.SPINE_LICENSE", source)
+        self.assertIn("secrets.SPINE_LINUX_URL", source)
+        self.assertIn("GH_REPO: vladleopold/3Spine-core", source)
+        self.assertNotIn("actions/upload-artifact", source)
+        self.assertNotIn("actions/download-artifact", source)
+
     def test_public_runner_lints_every_workflow(self):
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("actionlint", source)
