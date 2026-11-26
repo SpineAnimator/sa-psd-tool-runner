@@ -1,0 +1,262 @@
+name: Verify PR123 Cherry 360 exact SHA in licensed Spine Editor
+# Revalidate unchanged 074c00d5 PSD candidate after adding real-render
+# hot-red contact island detection: diagnostic PASS is not art approval.
+# Re-run after tightening the true frame-26 dark-hole gate unit fixture.
+# Candidate QA pulse: PR123 updated to the latest source+gold-first material fix SHA 961e1632476bc965dafb088d1b0ab3cbdd41019e
+# Keyed continuous mesh/texture regression; 40 official PNGs are validation-only,
+# never assets for animation, spritesheets, or a flipbook.
+
+on:
+  workflow_call:
+    secrets:
+      SOURCE_REPO_TOKEN:
+        required: true
+      SPINE_LICENSE:
+        required: true
+      SPINE_LINUX_URL:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+  contents: read
+  actions: read
+
+# Never run two licensed-editor sessions against this same candidate at once.
+concurrency:
+  group: native-editor-360-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  real-360-editor:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: 3spine
+    env:
+      SOURCE_REPO: SpineAnimator/spine-animator-private
+      SOURCE_BRANCH: fix/cherry360-derived-mesh-uv-coverage-20261111
+      SOURCE_PIN_SHA: 079401ad708ee5984fc3ffd289ff40805a6e6904
+      SPINE_LICENSE: ${{ secrets.SPINE_LICENSE }}
+      SPINE_LINUX_URL: ${{ secrets.SPINE_LINUX_URL }}
+    steps:
+      - name: Checkout trusted 3Spine source on the public executor
+        uses: actions/checkout@v4
+        with:
+          repository: vladleopold/3Spine-core
+          ref: main
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          path: 3spine
+          persist-credentials: false
+      - name: Pin exact 3Spine source revision
+        run: echo "THREESPINE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - name: Check licensed Editor and private source configuration without exposing values
+        id: editor
+        shell: bash
+        env:
+          SOURCE_REPO_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for key in SOURCE_REPO_TOKEN SPINE_LICENSE SPINE_LINUX_URL; do
+            if [ -z "${!key}" ]; then missing+=("$key"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "CHERRY360_123_WAITING_FOR_PUBLIC_EDITOR_SECRETS" >> "$GITHUB_STEP_SUMMARY"
+            printf 'Missing public executor configuration: %s\\n' "${missing[*]}"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install passive visual-audit dependency
+        run: python3 -m pip install --disable-pip-version-check 'Pillow>=10.3,<14'
+
+      - name: Check visual gate regressions on synthetic source-like PNGs
+        run: python3 -m unittest discover -s tests -p 'test_audit_volume360_visual.py'
+
+      - name: Select successful real PSD 360 runtime artifact for exact art head
+        if: steps.editor.outputs.ready == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || { echo '::error::Read-only source artifact access unavailable'; exit 1; }
+          HEAD_SHA="$(gh api "repos/$SOURCE_REPO/branches/$SOURCE_BRANCH" --jq .commit.sha)"
+          [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo '::error::Cannot pin source commit'; exit 1; }
+          [[ "$HEAD_SHA" == "$SOURCE_PIN_SHA" ]] || {
+            echo "::error::PR123 head moved; native review requires an exact new ZIP"; exit 1;
+          }
+          gh api "repos/$SOURCE_REPO/pulls/123" |
+            jq -e --arg branch "$SOURCE_BRANCH" --arg sha "$SOURCE_PIN_SHA" --arg repo "$SOURCE_REPO" '
+              .state == "open" and .draft == true and .head.ref == $branch and
+              .head.sha == $sha and .head.repo.full_name == $repo and .base.ref == "main"
+            ' >/dev/null || {
+              echo "::error::PR123 not a trusted current draft in source repository"; exit 1;
+            }
+
+          # Independent SHA-pinned candidate review of PR #123. Treat PR
+          # outputs as DATA only; execute only this trusted 3Spine workflow.
+          # A source candidate is not merged or published by this gate.
+          # but ANY build-input change requires a fresh source runtime proof.
+          RUN_ROW="$(gh api "repos/$SOURCE_REPO/actions/workflows/volume360-real-psd.yml/runs?status=success&branch=$SOURCE_BRANCH&per_page=100" \
+            --jq "[.workflow_runs[] | select(.head_branch == \"$SOURCE_BRANCH\" and .head_sha == \"$SOURCE_PIN_SHA\" and .event == \"push\" and .conclusion == \"success\")] | first | [.id, .head_sha] | @tsv")"
+          read -r RUN_ID SOURCE_SHA <<< "$RUN_ROW"
+          [[ "${RUN_ID:-}" =~ ^[0-9]{8,20}$ && "${SOURCE_SHA:-}" =~ ^[a-f0-9]{40}$ ]] || {
+            echo '::error::No successful pinned PR123 360 ZIP'; exit 1;
+          }
+          RUN_META="$(gh api "repos/$SOURCE_REPO/actions/runs/$RUN_ID")"
+          printf '%s' "$RUN_META" | jq -e --arg repo "$SOURCE_REPO" --arg source "$SOURCE_SHA" '
+            .conclusion == "success" and .event == "push" and
+            .head_branch == "fix/cherry360-derived-mesh-uv-coverage-20261111" and .head_sha == $source and
+            .repository.full_name == $repo and .head_repository.full_name == $repo and
+            (.path | endswith("/volume360-real-psd.yml"))
+          ' >/dev/null || { echo '::error::Source run provenance not trusted'; exit 1; }
+          COMPARE="$(gh api "repos/$SOURCE_REPO/compare/$SOURCE_SHA...$HEAD_SHA")"
+          printf '%s' "$COMPARE" | jq -e '
+            (.status == "identical") or
+            (.status == "ahead" and .ahead_by <= 32 and (.files | length) < 300)
+          ' >/dev/null || { echo '::error::Source artifact does not match recent main ancestry'; exit 1; }
+          # No code, runtime, original fixture, dependency or workflow changes
+          # may occur after the validated source SHA. Otherwise reject stale ZIP.
+          CHANGED="$(printf '%s' "$COMPARE" | jq -r '.files[]?.filename')"
+          if printf '%s\n' "$CHANGED" | grep -E '^(engine/(turn-|scene)|tools/(passive_psd_rgba_for_360|verify_real_psd_volume360)\.m?js$|tools/passive_psd_rgba_for_360\.py$|tests/fixtures/etalons/cherry/source\.psd$|\.github/workflows/volume360-real-psd\.yml$|package(-lock)?\.json$)'; then
+            echo '::error::PR123 changed a PSD-360 build input since pinned source ZIP; rebuild required'
+            exit 1
+          fi
+          echo "Pinned PR123 source CI SHA $SOURCE_SHA against current PR123 head $HEAD_SHA (no relevant build input changed)"
+          ART_ID="$(gh api "repos/$SOURCE_REPO/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "experimental-real-psd-volume360-runtime" and .expired == false)] | first | .id')"
+          [[ "${ART_ID:-}" =~ ^[0-9]{8,20}$ ]] || { echo '::error::The pinned build has no real PSD 360 ZIP'; exit 1; }
+          mkdir -p work/input
+          curl --fail --location --silent --show-error --retry 2 --max-time 150 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$SOURCE_REPO/actions/artifacts/$ART_ID/zip" \
+            -o work/input/runtime-evidence.zip
+          unzip -t work/input/runtime-evidence.zip > /dev/null
+          unzip -q work/input/runtime-evidence.zip -d work/input/unpacked
+          ARTIFACT="$(find work/input/unpacked -name real-psd-volume360-spine-4.3.26.zip -type f -print -quit)"
+          test -n "$ARTIFACT" && test -f "$ARTIFACT" || { echo '::error::Pinned ZIP payload missing'; exit 1; }
+          echo "ARCHIVE_FILE=$ARTIFACT" >> "$GITHUB_ENV"
+          echo "SOURCE_HEAD_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "SOURCE_RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          echo "Pinned successful 360 proof: run $RUN_ID, tested $SOURCE_SHA, branch $SOURCE_BRANCH"
+
+      - name: Check out the exact original PSD fixture commit for SHA evidence
+        if: steps.editor.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: SpineAnimator/spine-animator-private
+          ref: ${{ env.SOURCE_HEAD_SHA }}
+          path: source-commit
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Verify original PSD identity independently from ZIP manifest
+        if: steps.editor.outputs.ready == 'true'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os,zipfile
+          psd=Path('source-commit/tests/fixtures/etalons/cherry/source.psd')
+          assert psd.is_file(), 'original source PSD unavailable'
+          with zipfile.ZipFile(os.environ['ARCHIVE_FILE']) as z:
+              assert z.testzip() is None
+              manifest=json.loads(z.read('manifest.json'))
+              assert manifest['sourceSha256']==hashlib.sha256(psd.read_bytes()).hexdigest()
+              assert manifest['editorVerified'] is False
+              assert manifest['artisticApproval'] is False
+              print('PINNED_PSD_SOURCE_SHA_VERIFIED',manifest['sourceSha256'])
+          PY
+
+      - name: Install licensed Spine Editor 4.3.26
+        if: steps.editor.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb x11-utils x11-xserver-utils libxrandr2 libgl1-mesa-dri libgl1 libxrender1 libxi6 libxext6 libxfixes3 libxcursor1
+          curl --fail --location --silent --show-error --max-time 600 --retry 2 \
+            -A 'Mozilla/5.0 (X11; Linux x86_64)' \
+            "$SPINE_LINUX_URL" -o "$RUNNER_TEMP/spine-linux.gz"
+          gzip -t "$RUNNER_TEMP/spine-linux.gz"
+          mkdir -p "$RUNNER_TEMP/spine"
+          gzip -dc "$RUNNER_TEMP/spine-linux.gz" | tar -xf - -C "$RUNNER_TEMP/spine"
+          SPINE_CLI="$RUNNER_TEMP/spine/Spine/Spine.sh"
+          test -x "$SPINE_CLI" || { echo '::error::Licensed Spine.sh is missing'; exit 1; }
+          echo "SPINE_CLI=$SPINE_CLI" >> "$GITHUB_ENV"
+
+      - name: Import, export editable nonessential mesh and render every 360 frame in the real Editor
+        if: steps.editor.outputs.ready == 'true'
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          xvfb-run -a -s '-screen 0 1600x1000x24' \
+            python3 scripts/verify_volume360_editor_linux.py \
+              --archive "$ARCHIVE_FILE" \
+              --spine "$SPINE_CLI" \
+              --output work/editor
+
+      - name: Reject rectangular, clipped or low-detail rear cherries in actual Spine Editor PNG frames
+        if: steps.editor.outputs.ready == 'true'
+        shell: bash
+        run: |
+          python3 scripts/audit_volume360_visual.py \
+            --frames-dir work/editor/screenshots \
+            --output work/editor/official-360-visual-audit.json
+
+      - name: Keep private 360 evidence out of public Actions artifacts
+        if: false # PSD, Spine projects and native PNGs are private source assets.
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-psd-360-licensed-editor-unapproved-evidence
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            work/editor/official-360-editor-report.json
+            work/editor/official-360-visual-audit.json
+            work/editor/real-psd-volume360-editor-4.3.26.spine
+            work/editor/roundtrip/
+            work/editor/screenshots/
+            work/input/unpacked/volume360-audit.json
+
+      - name: Preserve native Editor evidence in a private 3Spine draft Release
+        if: ${{ always() && steps.editor.outputs.ready == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          GH_REPO: vladleopold/3Spine-core
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d work/editor ] && [ ! -d work/input ]; then
+            echo "No native proof directory was produced; nothing private to upload."
+            exit 0
+          fi
+          test "$(gh api "repos/$GH_REPO" --jq .private)" = true
+          TAG="cherry360-pr123-evidence-$GITHUB_RUN_ID-attempt-$GITHUB_RUN_ATTEMPT"
+          gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1 || \
+            gh release create "$TAG" --draft --latest=false --target "$THREESPINE_SHA" --repo "$GH_REPO" \
+              --title "Private Cherry 360 PR123 native Editor evidence $GITHUB_RUN_ID" \
+              --notes "Private native Spine Editor evidence. Public runner: $GITHUB_REPOSITORY. 3Spine source: $THREESPINE_SHA. Candidate SHA: $SOURCE_PIN_SHA."
+          while IFS= read -r -d '' file; do
+            gh release upload "$TAG" "$file" --repo "$GH_REPO" --clobber
+          done < <(find work/editor work/input -type f -print0 2>/dev/null || true)
+
+      - name: Deactivate licensed Editor on ephemeral runner
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${SPINE_CLI:-}" ] && [ -x "$SPINE_CLI" ]; then
+            timeout 180 xvfb-run -a "$SPINE_CLI" -l >/dev/null 2>&1 || true
+          fi
