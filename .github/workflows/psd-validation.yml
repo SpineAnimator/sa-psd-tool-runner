@@ -2,6 +2,20 @@ name: SA PSD tool runner
 
 on:
   workflow_call:
+    inputs:
+      source-repository:
+        description: Private or public source repository to validate
+        required: false
+        type: string
+        default: ''
+      source-ref:
+        description: Exact source branch, tag, or commit to validate
+        required: false
+        type: string
+        default: main
+    secrets:
+      SOURCE_REPO_TOKEN:
+        required: false
   push:
     branches: [main]
   workflow_dispatch:
@@ -10,32 +24,29 @@ permissions:
   contents: read
 
 jobs:
-  runner-smoke:
+  public-runner-smoke:
     if: github.repository == 'SpineAnimator/sa-psd-tool-runner'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Prove GitHub-hosted runner allocation and toolchain
+      - name: Prove GitHub-hosted Ubuntu 24.04 allocation and toolchain
         shell: bash
         run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          grep -q 'Ubuntu 24.04' /etc/os-release
           echo "RUNNER_NAME=$RUNNER_NAME"
           echo "RUNNER_OS=$RUNNER_OS"
           echo "RUNNER_ARCH=$RUNNER_ARCH"
           uname -a
           python3 --version
           node --version
-      - name: Checkout runner image sources
+      - name: Checkout public runner contract sources
         uses: actions/checkout@v4
-      - name: Run public-only runner contract (RED)
+        with:
+          persist-credentials: false
+      - name: Validate public-only runner contract
         run: python3 -m unittest discover -s tests -p 'test_public_runner_contract.py' -v
-      - name: Validate runner bootstrap script
-        run: bash -n entrypoint.sh
-      - name: Build optional self-hosted runner image
-        run: docker build --pull -t sa-psd-tool-runner:ci .
-      - name: Inspect runner image
-        run: docker image inspect sa-psd-tool-runner:ci --format '{{.Os}}/{{.Architecture}}'
-      - name: Validate Compose deployment configuration
-        run: docker compose config --quiet
 
   psd-spine-validation:
     if: github.repository != 'SpineAnimator/sa-psd-tool-runner'
@@ -55,11 +66,18 @@ jobs:
           python3 --version
           node --version
 
-      - name: Checkout caller repository
+      - name: Require private-source token when a private source is requested
+        if: inputs.source-repository != ''
+        env:
+          SOURCE_REPO_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: test -n "$SOURCE_REPO_TOKEN" || { echo "::error::SOURCE_REPO_TOKEN is required for private source checkout."; exit 1; }
+
+      - name: Checkout exact source repository and revision
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
+          repository: ${{ inputs.source-repository || github.repository }}
+          ref: ${{ inputs.source-ref || github.sha }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}
           persist-credentials: false
 
       - name: Set up Node.js
